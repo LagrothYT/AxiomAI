@@ -37,8 +37,15 @@ def process_pretrain(tokenizer):
                     
     # Chunk into max_seq_len + 1 (for input and target)
     chunk_size = config.max_seq_len
+
+    # Pad at the end to avoid dropping the last chunk
+    rem = (len(all_tokens) - 1) % chunk_size
+    if rem > 0:
+        pad_len = chunk_size - rem
+        all_tokens.extend([0] * pad_len)
+        
     samples = []
-    for i in range(0, len(all_tokens) - chunk_size, chunk_size):
+    for i in range(0, len(all_tokens) - chunk_size + 1, chunk_size):
         samples.append(all_tokens[i:i + chunk_size + 1])
         
     if not samples:
@@ -56,8 +63,10 @@ def process_sft(tokenizer):
     
     all_samples = [] # List of (input_ids, loss_mask)
     
-    # Template: [HUMAN]: ... [GPT]: ...
-    eos_id = tokenizer.vocab.get("<EOS>", 3) # Assuming 3 from bpe.py
+    # Roles for formatting
+    human_prefix = f"{config.human_role}: "
+    gpt_prefix = f"{config.gpt_role}: "
+    eos_id = tokenizer.vocab.get(config.eos_token, 3)
     
     for file_path in jsonl_files:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -72,16 +81,14 @@ def process_sft(tokenizer):
                         content = turn.get("value", "")
                         
                         if role == "human":
-                            prefix = "[HUMAN]: "
-                            prefix_tokens = tokenizer.encode(prefix)
+                            prefix_tokens = tokenizer.encode(human_prefix)
                             content_tokens = tokenizer.encode(content)
                             
                             turn_tokens = prefix_tokens + content_tokens
                             curr_ids.extend(turn_tokens)
                             curr_mask.extend([0] * len(turn_tokens)) # No loss on human turn
                         elif role == "gpt":
-                            prefix = "[GPT]: "
-                            prefix_tokens = tokenizer.encode(prefix)
+                            prefix_tokens = tokenizer.encode(gpt_prefix)
                             content_tokens = tokenizer.encode(content) + [eos_id]
                             
                             # No loss on "[GPT]: " prefix, only on content

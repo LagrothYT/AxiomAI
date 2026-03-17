@@ -68,7 +68,7 @@ class TinyGPT(nn.Module):
     def __init__(self, vocab_size, d_model, n_layers, n_heads, d_ff, max_seq_len, dropout=0.1):
         super().__init__()
         self.token_emb = nn.Embedding(vocab_size, d_model)
-        self.pos_emb = nn.Parameter(torch.zeros(1, max_seq_len, d_model))
+        self.pos_emb = nn.Parameter(torch.randn(1, max_seq_len, d_model) * 0.02)
         self.dropout = nn.Dropout(dropout)
         
         self.layers = nn.ModuleList([
@@ -94,6 +94,8 @@ class TinyGPT(nn.Module):
         # Create causal mask if not provided
         if mask is None:
             mask = torch.tril(torch.ones((seq_len, seq_len), device=idx.device)).view(1, 1, seq_len, seq_len)
+        else:
+            mask = mask.to(idx.device)
             
         for layer in self.layers:
             x = layer(x, mask)
@@ -109,7 +111,11 @@ class TinyGPT(nn.Module):
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_p=None, eos_id=None):
+        import time
+        probs_out = []
+        start_time = time.time()
         for _ in range(max_new_tokens):
+            # ... (rest of the logic stays same)
             # Crop to max_seq_len
             idx_cond = idx if idx.size(1) <= self.max_seq_len else idx[:, -self.max_seq_len:]
             
@@ -127,15 +133,23 @@ class TinyGPT(nn.Module):
                 sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
                 sorted_indices_to_remove[..., 0] = 0
                 
-                indices_to_remove = sorted_indices[sorted_indices_to_remove]
-                logits[:, indices_to_remove] = -float('Inf')
+                # Remap the mask back to the original index space
+                indices_to_remove = torch.zeros_like(logits, dtype=torch.bool).scatter_(1, sorted_indices, sorted_indices_to_remove)
+                logits[indices_to_remove] = -float('Inf')
                 
             probs = F.softmax(logits, dim=-1)
             idx_next = torch.multinomial(probs, num_samples=1)
+            
+            # Record the probability of the chosen token
+            token_prob = probs.gather(1, idx_next).item()
+            probs_out.append(token_prob)
+            
             idx = torch.cat((idx, idx_next), dim=1)
             
             # Stop if EOS
             if eos_id is not None and idx_next.item() == eos_id:
                 break
                 
-        return idx
+        end_time = time.time()
+        gen_time = end_time - start_time
+        return idx, probs_out, gen_time

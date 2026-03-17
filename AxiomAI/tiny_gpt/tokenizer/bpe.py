@@ -2,6 +2,7 @@ import json
 import os
 import re
 from collections import Counter, defaultdict
+from tqdm import tqdm
 
 class BPETokenizer:
     def __init__(self, vocab_size=5000):
@@ -36,11 +37,11 @@ class BPETokenizer:
             self.id_to_token[i] = token
             
         # Initial character-level vocab from corpus
-        all_text = " ".join(texts)
-        # Pre-tokenize by whitespace to avoid $O(n^2)$ on full string
-        # Use space as a suffix/prefix marker or just split
-        words = all_text.split()
-        word_freqs = Counter([" ".join(list(word)) + " </w>" for word in words])
+        word_freqs = Counter()
+        for text in texts:
+            words = text.split()
+            for word in words:
+                word_freqs[" ".join(list(word)) + " </w>"] += 1
         
         # Build initial character vocab
         chars = set()
@@ -55,7 +56,8 @@ class BPETokenizer:
             
         # Merge loop
         num_merges = self.vocab_size - len(self.vocab)
-        for i in range(num_merges):
+        loop = tqdm(range(num_merges), desc="Training BPE")
+        for i in loop:
             pairs = self._get_stats(word_freqs)
             if not pairs:
                 break
@@ -66,12 +68,12 @@ class BPETokenizer:
             
             self.vocab[new_token] = new_id
             self.id_to_token[new_id] = new_token
-            self.merges[best_pair] = new_id
+            self.merges[best_pair] = i # Store merge index as rank
             
             word_freqs = self._merge_vocab(best_pair, word_freqs)
             
             if (i + 1) % 100 == 0:
-                print(f"BPE merge {i+1}/{num_merges}: {best_pair[0]} + {best_pair[1]} -> {new_token}")
+                loop.set_description(f"BPE merge {i+1}/{num_merges}: {best_pair[0]} + {best_pair[1]} -> {new_token}")
 
     def encode(self, text):
         if not text:
@@ -129,16 +131,23 @@ class BPETokenizer:
 
     def decode(self, ids):
         tokens = [self.id_to_token.get(i, "<UNK>") for i in ids]
-        # Remove word boundary marker if present
-        text = "".join(tokens).replace("</w>", " ")
-        return text.strip()
+        text = ""
+        for token in tokens:
+            if token in self.special_tokens:
+                text += f" {token} "
+            elif token.endswith("</w>"):
+                text += token.replace("</w>", " ")
+            else:
+                text += token
+        return " ".join(text.split())
 
     def save(self, path):
         serializable_merges = {f"{k[0]}<SEP>{k[1]}": v for k, v in self.merges.items()}
         data = {
             "vocab": self.vocab,
             "merges": serializable_merges,
-            "vocab_size": self.vocab_size
+            "vocab_size": self.vocab_size,
+            "special_tokens": self.special_tokens
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -148,8 +157,10 @@ class BPETokenizer:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         
-        obj = cls(vocab_size=data["vocab_size"])
+        obj = cls(vocab_size=data.get("vocab_size", 5000))
+        obj.special_tokens = data.get("special_tokens", ["<PAD>", "<UNK>", "<BOS>", "<EOS>", "[HUMAN]", "[GPT]"])
         obj.vocab = data["vocab"]
+        obj.vocab_size = len(obj.vocab)
         obj.id_to_token = {int(v): k for k, v in obj.vocab.items()}
         
         obj.merges = {}

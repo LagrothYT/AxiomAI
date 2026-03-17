@@ -1,7 +1,7 @@
-import argparse
 import sys
 import os
 import subprocess
+import config
 
 def run_command(command):
     try:
@@ -9,79 +9,130 @@ def run_command(command):
         full_command = [sys.executable] + command
         print(f"Running: {' '.join(full_command)}")
         subprocess.run(full_command, check=True)
+        return True
     except subprocess.CalledProcessError as e:
-        print(f"Error running command: {e}")
-        sys.exit(1)
+        print(f"\n[!] Error running command: {e}")
+        return False
+
+
+
+def clear_screen():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+def get_status():
+    status = []
+    
+    # Tokenizer
+    tok_path = os.path.join(config.tokenizer_dir, "tokenizer.json")
+    tok_exists = os.path.exists(tok_path)
+    status.append(f"{'Tokenizer:':<18} [{'X' if tok_exists else ' '}]")
+    
+    # Data
+    pre_path = os.path.join(config.processed_data_dir, "pretrain.pt")
+    sft_path = os.path.join(config.processed_data_dir, "sft.pt")
+    status.append(f"{'Pretrain Data:':<18} [{'X' if os.path.exists(pre_path) else ' '}]")
+    status.append(f"{'SFT Data:':<18} [{'X' if os.path.exists(sft_path) else ' '}]")
+    
+    # Model
+    model_exists = os.path.exists(config.best_model_path)
+    status.append(f"{'Model Checkpoint:':<18} [{'X' if model_exists else ' '}]")
+    
+    return "\n".join(status)
+    
+def get_validated_input(prompt, default, min_val, max_val, as_int=False):
+    while True:
+        try:
+            val_in = input(f"{prompt} [{default}]: ").strip()
+            if not val_in:
+                return default
+            val = float(val_in)
+            if min_val <= val <= max_val:
+                return int(val) if as_int else val
+            print(f"Error: Value must be between {min_val} and {max_val}.")
+        except ValueError:
+            print(f"Error: Invalid number. Please enter a {'integer' if as_int else 'float'}.")
 
 def interactive_menu():
+    prereqs = {
+        "3": [
+            (os.path.join(config.tokenizer_dir, "tokenizer.json"), "Tokenizer"),
+            (os.path.join(config.processed_data_dir, "pretrain.pt"), "Pretrain Data")
+        ],
+        "5": [
+            (os.path.join(config.tokenizer_dir, "tokenizer.json"), "Tokenizer"),
+            (os.path.join(config.processed_data_dir, "sft.pt"), "SFT Data")
+        ],
+        "6": [
+            (os.path.join(config.tokenizer_dir, "tokenizer.json"), "Tokenizer"),
+            (config.best_model_path, "Model Checkpoint")
+        ]
+    }
+    last_error_choice = None
     while True:
-        print("\n=== TinyGPT Multi-Tool ===")
+        clear_screen()
+        print("=== TinyGPT Multi-Tool ===")
+        if last_error_choice:
+            print(f" [!] LAST OPERATION FAILED (Option {last_error_choice})")
+        print(get_status())
+        print("-" * 26)
         print("1. Train Tokenizer")
         print("2. Data Preprocessing (Pretrain mode)")
-        print("3. Pretrain Model")
+        
+        req3 = ", ".join(name for path, name in prereqs["3"] if not os.path.exists(path))
+        print(f"3. Pretrain Model {'[Requires: ' + req3 + ']' if req3 else ''}")
+        
         print("4. Data Preprocessing (SFT mode)")
-        print("5. SFT Fine-tune Model")
-        print("6. Interactive Chat")
+        
+        req5 = ", ".join(name for path, name in prereqs["5"] if not os.path.exists(path))
+        print(f"5. SFT Fine-tune Model {'[Requires: ' + req5 + ']' if req5 else ''}")
+        
+        req6 = ", ".join(name for path, name in prereqs["6"] if not os.path.exists(path))
+        print(f"6. Interactive Chat {'[Requires: ' + req6 + ']' if req6 else ''}")
+        
         print("7. Exit")
         
         choice = input("\nSelect an option (1-7): ").strip()
         
+        if choice in prereqs:
+            missing = [name for path, name in prereqs[choice] if not os.path.exists(path)]
+            if missing:
+                print(f"\n[!] Error: Missing prerequisites: {', '.join(missing)}")
+                input("\nPress Enter to continue...")
+                continue
+
+        success = True
         if choice == "1":
-            run_command(["tokenizer/train_tokenizer.py"])
+            success = run_command(["tokenizer/train_tokenizer.py"])
         elif choice == "2":
-            run_command(["data/prepare_data.py", "--mode", "pretrain"])
+            success = run_command(["data/prepare_data.py", "--mode", "pretrain"])
         elif choice == "3":
-            run_command(["train.py", "--mode", "pretrain"])
+            success = run_command(["train.py", "--mode", "pretrain"])
         elif choice == "4":
-            run_command(["data/prepare_data.py", "--mode", "sft"])
+            success = run_command(["data/prepare_data.py", "--mode", "sft"])
         elif choice == "5":
-            run_command(["train.py", "--mode", "sft"])
+            success = run_command(["train.py", "--mode", "sft"])
         elif choice == "6":
-            run_command(["chat.py"])
+            print("\n--- Chat Settings ---")
+            temp = get_validated_input("Temperature", config.temperature, 0.1, 2.0)
+            top_p = get_validated_input("Top-p", config.top_p, 0.0, 1.0)
+            max_tokens = get_validated_input("Max New Tokens", config.max_new_tokens, 1, config.max_seq_len, as_int=True)
+            success = run_command(["chat.py", "--temperature", str(temp), "--top_p", str(top_p), "--max_new_tokens", str(max_tokens)])
         elif choice == "7":
             print("Exiting...")
             break
         else:
             print("Invalid selection. Please try again.")
+            success = False # To not clear error state on invalid input
+            
+        if success:
+            last_error_choice = None
+        elif choice in ["1", "2", "3", "4", "5", "6"]:
+            last_error_choice = choice
+            
+        input("\nPress Enter to continue...")
 
 def main():
-    if len(sys.argv) > 1:
-        # Keep argument-based CLI for automation/scripts
-        parser = argparse.ArgumentParser(description="TinyGPT Unified CLI")
-        subparsers = parser.add_subparsers(dest="command", help="Commands")
-
-        # Train Tokenizer
-        subparsers.add_parser("train-tokenizer", help="Train the BPE tokenizer on data/*.jsonl")
-
-        # Prepare Data
-        prep_parser = subparsers.add_parser("prepare", help="Preprocess data for training")
-        prep_parser.add_argument("--mode", choices=["pretrain", "sft"], required=True, help="Preprocessing mode")
-
-        # Train Model
-        train_parser = subparsers.add_parser("train", help="Train the model (Pretrain or SFT)")
-        train_parser.add_argument("--mode", choices=["pretrain", "sft"], required=True, help="Training mode")
-
-        # Chat
-        chat_parser = subparsers.add_parser("chat", help="Chat with the trained model")
-        chat_parser.add_argument("--temperature", type=float, default=0.8, help="Sampling temperature")
-        chat_parser.add_argument("--top_p", type=float, default=0.9, help="Top-p sampling threshold")
-
-        args = parser.parse_args()
-
-        if args.command == "train-tokenizer":
-            run_command(["tokenizer/train_tokenizer.py"])
-        elif args.command == "prepare":
-            run_command(["data/prepare_data.py", "--mode", args.mode])
-        elif args.command == "train":
-            run_command(["train.py", "--mode", args.mode])
-        elif args.command == "chat":
-            cmd = ["chat.py", "--temperature", str(args.temperature), "--top_p", str(args.top_p)]
-            run_command(cmd)
-        else:
-            parser.print_help()
-    else:
-        # Default to interactive menu if no arguments
-        interactive_menu()
+    interactive_menu()
 
 if __name__ == "__main__":
     main()

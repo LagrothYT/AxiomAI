@@ -3,7 +3,7 @@ import sys
 import argparse
 import torch
 import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from tqdm import tqdm
 
@@ -68,35 +68,49 @@ def train():
         dataset = TensorDataset(x, y, mask)
         
     # Split data
-    train_size = int(0.9 * len(dataset))
-    val_size = len(dataset) - train_size
-    
-    # Guard against 0 validation size
-    if val_size == 0 and len(dataset) > 1:
-        train_size = len(dataset) - 1
-        val_size = 1
-    elif val_size == 0:
+    if len(dataset) < 2:
         print("Warning: Dataset too small for validation split. Using all data for training.")
         train_ds = dataset
-        val_ds = dataset # Just to avoid crash, though it will overfit
+        val_ds = dataset
     else:
+        train_size = int((1.0 - config.val_split) * len(dataset))
+        val_size = len(dataset) - train_size
+        # Ensure at least one validation sample if we have data to spare
+        if val_size == 0:
+            train_size -= 1
+            val_size = 1
         train_ds, val_ds = random_split(dataset, [train_size, val_size])
     
     train_loader = DataLoader(train_ds, batch_size=config.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=config.batch_size)
     
-    optimizer = optim.AdamW(model.parameters(), lr=config.lr)
-    scheduler = CosineAnnealingLR(optimizer, T_max=config.epochs)
+    # Separate parameters into decay and no-decay groups (exclude biases and LN)
+    param_dict = {n: p for n, p in model.named_parameters()}
+    decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+    no_decay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+    
+    param_groups = [
+        {"params": decay_params, "weight_decay": config.weight_decay},
+        {"params": no_decay_params, "weight_decay": 0.0}
+    ]
+    
+    optimizer = optim.AdamW(param_groups, lr=config.lr)
+    
+    # Step-based scheduler: T_0 is steps per cycle (default 10 epochs worth)
+    steps_per_epoch = len(train_loader)
+    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=steps_per_epoch * 10, T_mult=1, eta_min=config.lr * 0.1)
     
     best_val_loss = float('inf')
     patience_counter = 0
+    
+    ppl_label = "SFT-PPL" if args.mode == "sft" else "PPL"
     
     for epoch in range(config.epochs):
         model.train()
         train_loss = 0
         optimizer.zero_grad()
         
-        loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config.epochs} [Train]")
+        loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config.epochs} [Train]", leave=False)
         for i, batch in enumerate(loop):
             if args.mode == "pretrain":
                 x_b, y_b = [t.to(device) for t in batch]
@@ -115,15 +129,28 @@ def train():
             loss = loss / config.grad_accum_steps
             loss.backward()
             
-            if (i + 1) % config.grad_accum_steps == 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            if (i + 1) % config.grad_accum_steps == 0 or (i + 1) == len(train_loader):
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
                 optimizer.step()
                 optimizer.zero_grad()
                 
             train_loss += loss.item() * config.grad_accum_steps
-            loop.set_postfix(loss=loss.item() * config.grad_accum_steps)
             
-        scheduler.step()
+            # Linear Warmup (first 100 steps)
+            curr_step = epoch * steps_per_epoch + i
+            if curr_step < 100:
+                lr_scale = min(1.0, float(curr_step + 1) / 100.0)
+                for group in optimizer.param_groups:
+                    group['lr'] = lr_scale * config.lr
+            else:
+                scheduler.step(epoch + i / steps_per_epoch)
+                
+            loop.set_postfix(
+                loss=f"{loss.item() * config.grad_accum_steps:.4f}",
+                ppl=f"{ppl_label}: {torch.exp(torch.tensor(loss.item() * config.grad_accum_steps)):.2f}",
+                lr=f"{optimizer.param_groups[0]['lr']:.2e}"
+            )
+            
         avg_train_loss = train_loss / len(train_loader)
         
         # Validation
@@ -146,7 +173,34 @@ def train():
                 val_loss += loss.item()
                 
         avg_val_loss = val_loss / len(val_loader)
-        print(f"Epoch {epoch+1}: Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        
+        train_ppl = torch.exp(torch.tensor(avg_train_loss)).item()
+        val_ppl = torch.exp(torch.tensor(avg_val_loss)).item()
+        
+        print(f"Epoch {epoch+1}: Loss [T: {avg_train_loss:.4f}, V: {avg_val_loss:.4f}] | {ppl_label} [T: {train_ppl:.2f}, V: {val_ppl:.2f}]")
+        
+        # Sample Generation
+        if config.train_samples > 0:
+            model.eval()
+            with torch.no_grad():
+                prompt = config.train_sample_prompt
+                if not prompt:
+                    prompt = f"{config.human_role}: "
+                
+                input_ids = torch.tensor([tokenizer.encode(prompt)], dtype=torch.long).to(device)
+                print(f"\n--- Samples (Epoch {epoch+1}) ---")
+                for s in range(config.train_samples):
+                    # Use defaults from config for temperature/top_p during training samples
+                    output_ids, _, _ = model.generate(
+                        input_ids, 
+                        max_new_tokens=config.train_sample_len,
+                        temperature=config.temperature,
+                        top_p=config.top_p,
+                        eos_id=tokenizer.vocab.get(config.eos_token)
+                    )
+                    decoded = tokenizer.decode(output_ids[0].tolist())
+                    print(f" Sample {s+1}: {decoded}")
+                print("-" * 30 + "\n")
         
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
