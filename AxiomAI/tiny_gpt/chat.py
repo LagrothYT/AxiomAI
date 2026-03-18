@@ -88,6 +88,7 @@ def chat():
             
             # Format history and trim if it exceeds context limit
             trimmed = False
+            truncated = False
             while True:
                 prompt = ""
                 for turn in history:
@@ -96,18 +97,30 @@ def chat():
                 prompt += f"{config.gpt_role}: "
                 
                 encoded_prompt = tokenizer.encode(prompt)
-                # Keep room for at least generated tokens
-                if len(encoded_prompt) + args.max_new_tokens <= config.max_seq_len or len(history) <= 1:
+                
+                # If it fits, we're done
+                if len(encoded_prompt) + args.max_new_tokens <= config.max_seq_len:
                     break
                 
-                history.pop(0)
-                # Ensure the conversation doesn't start with a bot response
-                if history and history[0]["from"] == "gpt":
+                # If we have history to pop, pop it
+                if len(history) > 1:
                     history.pop(0)
-                trimmed = True
+                    # Ensure the conversation doesn't start with a bot response
+                    if history and history[0]["from"] == "gpt":
+                        history.pop(0)
+                    trimmed = True
+                else:
+                    # Single message still too long: truncate from front
+                    limit = config.max_seq_len - args.max_new_tokens
+                    encoded_prompt = encoded_prompt[-limit:]
+                    truncated = True
+                    break
             
-            if trimmed and not args.json_output:
-                print(" [SYSTEM] Warning: Old context trimmed to fit limit.")
+            if not args.json_output:
+                if truncated:
+                    print(f" [SYSTEM] Warning: Message significantly exceeds limit. Truncated to {config.max_seq_len - args.max_new_tokens} tokens.")
+                elif trimmed:
+                    print(" [SYSTEM] Warning: Old context trimmed to fit limit.")
 
             input_ids = torch.tensor([encoded_prompt], dtype=torch.long).to(device)
             
