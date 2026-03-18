@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import heapq
 from collections import Counter, defaultdict
 from tqdm import tqdm
 
@@ -12,41 +13,32 @@ class BPETokenizer:
         self.merges = {}  # (p1, p2) -> merged_token
         self.special_tokens = ["<PAD>", "<UNK>", "<BOS>", "<EOS>", "[HUMAN]", "[GPT]"]
         
-    def _get_stats(self, word_freqs):
-        pairs = defaultdict(int)
-        for word, freq in word_freqs.items():
-            symbols = word.split()
-            for i in range(len(symbols) - 1):
-                pairs[symbols[i], symbols[i+1]] += freq
-        return pairs
-
-    def _merge_vocab(self, pair, v_in):
-        v_out = {}
-        bigram = re.escape(' '.join(pair))
-        p = re.compile(r'(?<!\S)' + bigram + r'(?!\S)')
-        new_token = ''.join(pair)
-        for word in v_in:
-            w_out = p.sub(new_token, word)
-            v_out[w_out] = v_in[word]
-        return v_out
-
     def train(self, texts):
         # Add special tokens
         for i, token in enumerate(self.special_tokens):
             self.vocab[token] = i
             self.id_to_token[i] = token
             
-        # Initial character-level vocab from corpus
+        # Initial character-level tokens from corpus
+        # word_data: word_str -> list of symbols
+        # word_freqs: word_str -> frequency
         word_freqs = Counter()
         for text in texts:
-            words = text.split()
-            for word in words:
+            for word in text.split():
                 word_freqs[" ".join(list(word)) + " </w>"] += 1
+        
+        # Initial symbols and pair statistics
+        parts = {word: word.split() for word in word_freqs}
+        stats = defaultdict(int)
+        for word, freq in word_freqs.items():
+            symbols = parts[word]
+            for i in range(len(symbols) - 1):
+                stats[symbols[i], symbols[i+1]] += freq
         
         # Build initial character vocab
         chars = set()
         for word in word_freqs:
-            for char in word.split():
+            for char in parts[word]:
                 chars.add(char)
         
         start_idx = len(self.vocab)
@@ -54,23 +46,71 @@ class BPETokenizer:
             self.vocab[char] = i + start_idx
             self.id_to_token[i + start_idx] = char
             
+        # Optimization: Map pair to list of words containing it
+        pair_to_words = defaultdict(set)
+        for word, symbols in parts.items():
+            for i in range(len(symbols) - 1):
+                pair_to_words[symbols[i], symbols[i+1]].add(word)
+                
         # Merge loop
         num_merges = self.vocab_size - len(self.vocab)
         loop = tqdm(range(num_merges), desc="Training BPE")
         for i in loop:
-            pairs = self._get_stats(word_freqs)
-            if not pairs:
+            if not stats:
                 break
             
-            best_pair = max(pairs, key=pairs.get)
+            # Find best pair by frequency
+            best_pair = max(stats, key=stats.get)
+            if stats[best_pair] <= 0:
+                break
+                
             new_id = len(self.vocab)
             new_token = "".join(best_pair)
-            
             self.vocab[new_token] = new_id
             self.id_to_token[new_id] = new_token
-            self.merges[best_pair] = i # Store merge index as rank
+            self.merges[best_pair] = i
             
-            word_freqs = self._merge_vocab(best_pair, word_freqs)
+            # Efficiently update affected words
+            affected_words = list(pair_to_words[best_pair])
+            for word in affected_words:
+                freq = word_freqs[word]
+                symbols = parts[word]
+                
+                # Find all occurrences of best_pair in this word
+                j = 0
+                new_symbols = []
+                while j < len(symbols):
+                    if j < len(symbols) - 1 and (symbols[j], symbols[j+1]) == best_pair:
+                        # Before merging, remove broken pairs from stats
+                        if j > 0:
+                            left_pair = (symbols[j-1], symbols[j])
+                            stats[left_pair] -= freq
+                            pair_to_words[left_pair].discard(word)
+                        if j < len(symbols) - 2:
+                            # Avoid double counting if the NEXT pair is also a best_pair
+                            # But standard BPE merges one at a time.
+                            # However, we must remove the right pair because symbols[j+1] will be gone.
+                            right_pair = (symbols[j+1], symbols[j+2])
+                            stats[right_pair] -= freq
+                            pair_to_words[right_pair].discard(word)
+                        
+                        new_symbols.append(new_token)
+                        j += 2
+                    else:
+                        new_symbols.append(symbols[j])
+                        j += 1
+                
+                # Update stats for newly created pairs in this word
+                parts[word] = new_symbols
+                for k in range(len(new_symbols) - 1):
+                    if new_symbols[k] == new_token or new_symbols[k+1] == new_token:
+                        pair = (new_symbols[k], new_symbols[k+1])
+                        stats[pair] += freq
+                        pair_to_words[pair].add(word)
+            
+            # Remove best_pair from stats
+            del stats[best_pair]
+            del pair_to_words[best_pair]
             
             if (i + 1) % 100 == 0:
                 loop.set_description(f"BPE merge {i+1}/{num_merges}: {best_pair[0]} + {best_pair[1]} -> {new_token}")
@@ -79,11 +119,10 @@ class BPETokenizer:
         if not text:
             return []
             
-        # Isolate special tokens so they become distinct "words"
+        # Isolate special tokens
         for special in self.special_tokens:
             text = text.replace(special, f" {special} ")
             
-        # Split into words (special tokens are now isolated as their own words)
         words = text.split()
         encoded_ids = []
         
@@ -92,40 +131,57 @@ class BPETokenizer:
                 encoded_ids.append(self.vocab[word])
                 continue
                 
-            # Prepare word as list of characters
+            # node: [token, prev_idx, next_idx, is_valid]
             word_chars = list(word) + ["</w>"]
-            
-            while len(word_chars) >= 2:
-                # Find the earliest learned merge that applies to any pair in current word
-                best_pair = None
-                best_rank = float('inf')
+            if len(word_chars) < 2:
+                for token in word_chars:
+                    encoded_ids.append(self.vocab.get(token, self.vocab["<UNK>"]))
+                continue
+
+            nodes = []
+            for i, char in enumerate(word_chars):
+                nodes.append([char, i - 1, i + 1, True])
+            nodes[-1][2] = -1
+
+            queue = []
+            def add_pair(l_idx, r_idx):
+                pair = (nodes[l_idx][0], nodes[r_idx][0])
+                if pair in self.merges:
+                    heapq.heappush(queue, (self.merges[pair], l_idx, r_idx))
+
+            for i in range(len(nodes) - 1):
+                add_pair(i, i + 1)
+
+            while queue:
+                rank, l, r = heapq.heappop(queue)
+                if not nodes[l][3] or not nodes[r][3] or nodes[l][2] != r:
+                    continue
+
+                # Merge r into l
+                new_token = nodes[l][0] + nodes[r][0]
+                nodes[l][0] = new_token
+                nodes[r][3] = False
                 
-                for i in range(len(word_chars) - 1):
-                    pair = (word_chars[i], word_chars[i+1])
-                    if pair in self.merges:
-                        rank = self.merges[pair]
-                        if rank < best_rank:
-                            best_rank = rank
-                            best_pair = pair
-                
-                if best_pair is None:
-                    break
-                
-                # Apply the merge
-                new_word_chars = []
-                i = 0
-                while i < len(word_chars):
-                    if i < len(word_chars) - 1 and (word_chars[i], word_chars[i+1]) == best_pair:
-                        new_word_chars.append("".join(best_pair))
-                        i += 2
-                    else:
-                        new_word_chars.append(word_chars[i])
-                        i += 1
-                word_chars = new_word_chars
-                
-            for token in word_chars:
-                token_id = self.vocab.get(token, self.vocab["<UNK>"])
-                encoded_ids.append(token_id)
+                # Update links
+                next_idx = nodes[r][2]
+                nodes[l][2] = next_idx
+                if next_idx != -1:
+                    nodes[next_idx][1] = l
+
+                # Add new potential pairs
+                prev_idx = nodes[l][1]
+                if prev_idx != -1:
+                    add_pair(prev_idx, l)
+                if next_idx != -1:
+                    add_pair(l, next_idx)
+
+            # Collect tokens
+            curr = 0
+            while curr != -1:
+                if nodes[curr][3]:
+                    token = nodes[curr][0]
+                    encoded_ids.append(self.vocab.get(token, self.vocab["<UNK>"]))
+                curr = nodes[curr][2]
                 
         return encoded_ids
 

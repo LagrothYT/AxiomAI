@@ -18,12 +18,11 @@ DEFAULT_CONFIG = {
         "grad_accum_steps": 4,
         "dropout": 0.1,
         "early_stopping_patience": 3,
+        "early_stopping_enabled": True,
         "val_split": 0.1,
         "grad_clip": 1.0,
-        "weight_decay": 0.1,
-        "train_samples": 1,
-        "train_sample_len": 32,
-        "train_sample_prompt": ""
+        "weight_decay": 0.01,
+        "min_lr": 0.1
     },
     "generation": {
         "max_new_tokens": 256,
@@ -101,24 +100,23 @@ epochs = _config.get("training", {}).get("epochs", DEFAULT_CONFIG["training"]["e
 grad_accum_steps = _config.get("training", {}).get("grad_accum_steps", DEFAULT_CONFIG["training"]["grad_accum_steps"])
 dropout = _config.get("training", {}).get("dropout", DEFAULT_CONFIG["training"]["dropout"])
 early_stopping_patience = _config.get("training", {}).get("early_stopping_patience", DEFAULT_CONFIG["training"]["early_stopping_patience"])
-val_split = _config["training"].get("val_split", 0.1)
-grad_clip = _config["training"].get("grad_clip", 1.0)
-weight_decay = _config["training"].get("weight_decay", 0.1)
-train_samples = _config["training"].get("train_samples", 1)
-train_sample_len = _config["training"].get("train_sample_len", 32)
-train_sample_prompt = _config["training"].get("train_sample_prompt", "")
+early_stopping_enabled = _config.get("training", {}).get("early_stopping_enabled", DEFAULT_CONFIG["training"]["early_stopping_enabled"])
+val_split = _config.get("training", {}).get("val_split", DEFAULT_CONFIG["training"]["val_split"])
+grad_clip = _config.get("training", {}).get("grad_clip", DEFAULT_CONFIG["training"]["grad_clip"])
+weight_decay = _config.get("training", {}).get("weight_decay", DEFAULT_CONFIG["training"]["weight_decay"])
+min_lr = _config.get("training", {}).get("min_lr", DEFAULT_CONFIG["training"]["min_lr"])
 
 # Generation Parameters
-max_new_tokens = _config["generation"].get("max_new_tokens", 256)
-temperature = _config["generation"].get("temperature", 0.8)
-top_p = _config["generation"].get("top_p", 0.9)
-eos_token = _config["generation"].get("eos_token", "<EOS>")
+max_new_tokens = _config.get("generation", {}).get("max_new_tokens", DEFAULT_CONFIG["generation"]["max_new_tokens"])
+temperature = _config.get("generation", {}).get("temperature", DEFAULT_CONFIG["generation"]["temperature"])
+top_p = _config.get("generation", {}).get("top_p", DEFAULT_CONFIG["generation"]["top_p"])
+eos_token = _config.get("generation", {}).get("eos_token", DEFAULT_CONFIG["generation"]["eos_token"])
 
 # Chat UI Parameters
-user_prefix = _config["chat"].get("user_prefix", "[USER]")
-gpt_prefix = _config["chat"].get("gpt_prefix", "[GPT]")
-human_role = _config["chat"].get("human_role", "[HUMAN]")
-gpt_role = _config["chat"].get("gpt_role", "[GPT]")
+user_prefix = _config.get("chat", {}).get("user_prefix", DEFAULT_CONFIG["chat"]["user_prefix"])
+gpt_prefix = _config.get("chat", {}).get("gpt_prefix", DEFAULT_CONFIG["chat"]["gpt_prefix"])
+human_role = _config.get("chat", {}).get("human_role", DEFAULT_CONFIG["chat"]["human_role"])
+gpt_role = _config.get("chat", {}).get("gpt_role", DEFAULT_CONFIG["chat"]["gpt_role"])
 
 # Data & Checkpoints
 data_dir = os.path.join(BASE_DIR, _config.get("paths", {}).get("data_dir", DEFAULT_CONFIG["paths"]["data_dir"]))

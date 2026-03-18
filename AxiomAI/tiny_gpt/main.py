@@ -1,9 +1,61 @@
 import sys
 import os
 import subprocess
+import json
 import config
 
+def format_size(size_bytes):
+    if size_bytes == 0: return "0B"
+    size_name = ("B", "KB", "MB", "GB")
+    import math
+    i = int(math.floor(math.log(size_bytes, 1024)))
+    p = math.pow(1024, i)
+    s = round(size_bytes / p, 2)
+    return f"{s} {size_name[i]}"
+
+def get_data_specs():
+    data_path = os.path.join(config.data_dir, "data.jsonl")
+    if not os.path.exists(data_path):
+        return " [!] data.jsonl not found"
+        
+    raw_size = os.path.getsize(data_path)
+    true_chars = 0
+    with open(data_path, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                item = json.loads(line)
+                for conv in item.get("conversations", []):
+                    true_chars += len(conv.get("value", ""))
+            except: continue
+
+    specs = [
+        f"File:      {os.path.basename(data_path)} ({format_size(raw_size)})",
+        f"True Size: {true_chars:,} chars"
+    ]
+    
+    # Optional token count if tokenizer exists
+    tok_path = os.path.join(config.tokenizer_dir, "tokenizer.json")
+    if os.path.exists(tok_path):
+        try:
+            from tokenizer.bpe import BPETokenizer
+            tokenizer = BPETokenizer.load(tok_path)
+            total_tokens = 0
+            with open(data_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        item = json.loads(line)
+                        text = ""
+                        for conv in item.get("conversations", []):
+                            text += f"{conv['from']}: {conv['value']} "
+                        total_tokens += len(tokenizer.encode(text))
+                    except: continue
+            specs.append(f"Tokens:    {total_tokens:,} tokens")
+        except: pass
+        
+    return "\n ".join(specs)
+
 def run_command(command):
+# ... existing run_command ...
     try:
         # We use sys.executable to ensure we use the same python interpreter
         full_command = [sys.executable] + command
@@ -73,7 +125,10 @@ def interactive_menu():
         print("=== TinyGPT Multi-Tool ===")
         if last_error_choice:
             print(f" [!] LAST OPERATION FAILED (Option {last_error_choice})")
+        print("\n--- Project Status ---")
         print(get_status())
+        print("\n--- Data Specs ---")
+        print(" " + get_data_specs())
         print("-" * 26)
         print("1. Train Tokenizer")
         print("2. Data Preprocessing (Pretrain mode)")

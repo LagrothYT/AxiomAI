@@ -1,11 +1,13 @@
 import os
 import sys
 import argparse
+import math
 import torch
 import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from tqdm import tqdm
+import copy
 
 import config
 from model.transformer import TinyGPT
@@ -79,6 +81,7 @@ def train():
         if val_size == 0:
             train_size -= 1
             val_size = 1
+        torch.manual_seed(42)
         train_ds, val_ds = random_split(dataset, [train_size, val_size])
     
     train_loader = DataLoader(train_ds, batch_size=config.batch_size, shuffle=True)
@@ -96,12 +99,21 @@ def train():
     
     optimizer = optim.AdamW(param_groups, lr=config.lr)
     
-    # Step-based scheduler: T_0 is steps per cycle (default 10 epochs worth)
-    steps_per_epoch = len(train_loader)
-    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=steps_per_epoch * 10, T_mult=1, eta_min=config.lr * 0.1)
+    # Global Step-based LR Scheduler
+    total_steps = config.epochs * len(train_loader)
+    warmup_steps = 100
     
+    def lr_lambda(current_step):
+        if current_step < warmup_steps:
+            return float(current_step + 1) / float(warmup_steps)
+        # Cosine decay from 1.0 down to min_lr ratio
+        progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+        return config.min_lr + (1.0 - config.min_lr) * 0.5 * (1.0 + math.cos(math.pi * progress))
+    
+    scheduler = LambdaLR(optimizer, lr_lambda)
     best_val_loss = float('inf')
-    patience_counter = 0
+    best_model_state = None
+    epochs_no_improve = 0
     
     ppl_label = "SFT-PPL" if args.mode == "sft" else "PPL"
     
@@ -136,15 +148,9 @@ def train():
                 
             train_loss += loss.item() * config.grad_accum_steps
             
-            # Linear Warmup (first 100 steps)
-            curr_step = epoch * steps_per_epoch + i
-            if curr_step < 100:
-                lr_scale = min(1.0, float(curr_step + 1) / 100.0)
-                for group in optimizer.param_groups:
-                    group['lr'] = lr_scale * config.lr
-            else:
-                scheduler.step(epoch + i / steps_per_epoch)
-                
+            # Step LR
+            scheduler.step()
+            
             loop.set_postfix(
                 loss=f"{loss.item() * config.grad_accum_steps:.4f}",
                 ppl=f"{ppl_label}: {torch.exp(torch.tensor(loss.item() * config.grad_accum_steps)):.2f}",
@@ -155,7 +161,7 @@ def train():
         
         # Validation
         model.eval()
-        val_loss = 0
+        total_val_loss = 0
         with torch.no_grad():
             for batch in val_loader:
                 if args.mode == "pretrain":
@@ -164,54 +170,53 @@ def train():
                 else:
                     x_b, y_b, m_b = [t.to(device) for t in batch]
                     logits, _ = model(x_b)
+                    # Custom loss for SFT with mask
                     loss = torch.nn.functional.cross_entropy(
                         logits.view(-1, logits.size(-1)), 
                         y_b.view(-1), 
-                        reduction='none'
+                        reduction='none',
+                        ignore_index=0
                     )
                     loss = (loss * m_b.view(-1)).sum() / (m_b.sum() + 1e-9)
-                val_loss += loss.item()
+                total_val_loss += loss.item()
                 
-        avg_val_loss = val_loss / len(val_loader)
+        avg_val_loss = total_val_loss / max(1, len(val_loader))
         
         train_ppl = torch.exp(torch.tensor(avg_train_loss)).item()
         val_ppl = torch.exp(torch.tensor(avg_val_loss)).item()
         
-        print(f"Epoch {epoch+1}: Loss [T: {avg_train_loss:.4f}, V: {avg_val_loss:.4f}] | {ppl_label} [T: {train_ppl:.2f}, V: {val_ppl:.2f}]")
+        # Log metrics
+        print(f"Epoch {epoch+1}: Loss [T: {avg_train_loss:.4f}, V: {avg_val_loss:.4f}] | {ppl_label} [T: {train_ppl:.2f}, V: {val_ppl:.2f}] | LR: {optimizer.param_groups[0]['lr']:.6f}")
         
-        # Sample Generation
-        if config.train_samples > 0:
-            model.eval()
-            with torch.no_grad():
-                prompt = config.train_sample_prompt
-                if not prompt:
-                    prompt = f"{config.human_role}: "
-                
-                input_ids = torch.tensor([tokenizer.encode(prompt)], dtype=torch.long).to(device)
-                print(f"\n--- Samples (Epoch {epoch+1}) ---")
-                for s in range(config.train_samples):
-                    # Use defaults from config for temperature/top_p during training samples
-                    output_ids, _, _ = model.generate(
-                        input_ids, 
-                        max_new_tokens=config.train_sample_len,
-                        temperature=config.temperature,
-                        top_p=config.top_p,
-                        eos_id=tokenizer.vocab.get(config.eos_token)
-                    )
-                    decoded = tokenizer.decode(output_ids[0].tolist())
-                    print(f" Sample {s+1}: {decoded}")
-                print("-" * 30 + "\n")
-        
+        # Check for improvement and save best model during training
+        stop_training = False # Initialize for this epoch
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), config.best_model_path)
-            print(f"Saved best model to {config.best_model_path}")
-            patience_counter = 0
+            best_model_state = copy.deepcopy(model.state_dict())
+            torch.save(best_model_state, config.best_model_path) # Use config path
+            print(f"  --> New best model saved to {config.best_model_path} (Val Loss: {best_val_loss:.4f})")
+            epochs_no_improve = 0
         else:
-            patience_counter += 1
-            if patience_counter >= config.early_stopping_patience:
-                print("Early stopping triggered.")
-                break
+            epochs_no_improve += 1
+            
+        # Early stopping check
+        if config.early_stopping_enabled and epochs_no_improve >= config.early_stopping_patience:
+            print(f"Early stopping triggered after {epoch+1} epochs.")
+            stop_training = True
+            
+        if stop_training:
+            break
+
+    # Final cleanup after training loop
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+        print(f"\nTraining complete. Best model loaded with Val Loss: {best_val_loss:.4f}")
+    else:
+        # Fallback if no validation happened or no improvement (e.g., very short training)
+        # In this case, the last model state is saved if no better one was found.
+        torch.save(model.state_dict(), config.best_model_path)
+        print(f"\nTraining complete. No improvement found, last model state saved to {config.best_model_path}.")
+
 
 if __name__ == "__main__":
     train()
