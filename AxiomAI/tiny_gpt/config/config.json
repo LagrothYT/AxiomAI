@@ -18,7 +18,9 @@
         "grad_clip": 1.0,
         "weight_decay": 0.01,
         "early_stopping_enabled": false,
-        "min_lr": 0.3
+        "min_lr": 0.3,
+        "warmup_steps": 100,
+        "seed": 42
     },
     "generation": {
         "max_new_tokens": 128,

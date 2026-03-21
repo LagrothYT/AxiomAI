@@ -22,7 +22,9 @@ DEFAULT_CONFIG = {
         "val_split": 0.1,
         "grad_clip": 1.0,
         "weight_decay": 0.01,
-        "min_lr": 0.1
+        "min_lr": 0.1,
+        "warmup_steps": 100,
+        "seed": 42
     },
     "generation": {
         "max_new_tokens": 256,
@@ -105,6 +107,8 @@ val_split = _config.get("training", {}).get("val_split", DEFAULT_CONFIG["trainin
 grad_clip = _config.get("training", {}).get("grad_clip", DEFAULT_CONFIG["training"]["grad_clip"])
 weight_decay = _config.get("training", {}).get("weight_decay", DEFAULT_CONFIG["training"]["weight_decay"])
 min_lr = _config.get("training", {}).get("min_lr", DEFAULT_CONFIG["training"]["min_lr"])
+warmup_steps = _config.get("training", {}).get("warmup_steps", DEFAULT_CONFIG["training"]["warmup_steps"])
+seed = _config.get("training", {}).get("seed", DEFAULT_CONFIG["training"]["seed"])
 
 # Generation Parameters
 max_new_tokens = _config.get("generation", {}).get("max_new_tokens", DEFAULT_CONFIG["generation"]["max_new_tokens"])

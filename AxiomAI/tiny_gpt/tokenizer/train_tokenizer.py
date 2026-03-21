@@ -39,6 +39,13 @@ def main():
         print("Error: No conversation text found in data files.")
         sys.exit(1)
         
+    tokenizer_path = os.path.join(config.tokenizer_dir, "tokenizer.json")
+    if os.path.exists(tokenizer_path):
+        ans = input(f"Tokenizer already exists at {tokenizer_path}.\nRe-train and overwrite? (y/N): ").strip().lower()
+        if ans != 'y':
+            print("Aborted.")
+            sys.exit(0)
+            
     print(f"Collected {len(texts)} turns. Training BPE tokenizer (target vocab size: {config.vocab_size})...")
     
     tokenizer = BPETokenizer(vocab_size=config.vocab_size)

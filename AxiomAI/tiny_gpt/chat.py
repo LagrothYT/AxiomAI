@@ -44,11 +44,19 @@ def chat():
         dropout=0.0 # No dropout during inference
     ).to(device)
     
-    if not os.path.exists(config.best_model_path):
-        print(f"Error: Model checkpoint not found at {config.best_model_path}")
+    sft_path = config.best_model_path.replace("best.pt", "sft_best.pt")
+    pretrain_path = config.best_model_path.replace("best.pt", "pretrain_best.pt")
+    model_path = sft_path if os.path.exists(sft_path) else pretrain_path
+    
+    if not os.path.exists(model_path):
+        print(f"Error: Model checkpoint not found.")
         return
         
-    model.load_state_dict(torch.load(config.best_model_path, map_location=device, weights_only=True))
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    if "model" in checkpoint:
+        model.load_state_dict(checkpoint["model"])
+    else:
+        model.load_state_dict(checkpoint)
     model.eval()
     
     history = []
@@ -127,8 +135,11 @@ def chat():
             # Context info (calculated after generation below)
             
             eos_id = tokenizer.vocab.get(config.eos_token, 3)
-            # generate now returns (ids, probs, time)
-            output_ids, probs, gen_time = model.generate(
+            
+            if not args.json_output:
+                print(f"\n {config.gpt_prefix}  > ", end="", flush=True)
+
+            stream = model.generate_stream(
                 input_ids, 
                 max_new_tokens=args.max_new_tokens, 
                 temperature=args.temperature, 
@@ -136,17 +147,39 @@ def chat():
                 eos_id=eos_id
             )
             
-            # Context info
-            context_left = config.max_seq_len - output_ids.size(1)
+            probs = []
+            num_tokens = 0
+            response = ""
             
-            # Extract only the newly generated part
-            new_tokens = output_ids[0][input_ids.size(1):]
-            response = tokenizer.decode(new_tokens.tolist())
-            response = response.replace(config.eos_token, "").strip()
+            import time
+            start_time = time.time()
+            initial_seq_len = input_ids.size(1)
+            
+            for item, val in stream:
+                if item is None:
+                    break
+                probs.append(val)
+                num_tokens += 1
+                token_text = tokenizer.decode([item])
+                
+                if item == eos_id:
+                    break
+                    
+                response += token_text
+                if not args.json_output:
+                    print(token_text, end="", flush=True)
+                
+            gen_time = time.time() - start_time
+                
+            if not args.json_output:
+                print()
+                
+            response = response.strip()
+            
+            # Context info
+            context_left = max(0, config.max_seq_len - (initial_seq_len + num_tokens))
             
             # Metrics
-            num_tokens = new_tokens.size(0)
-            # Perplexity = exp(-mean(log(probs)))
             perplexity = math.exp(-sum(math.log(max(p, 1e-10)) for p in probs) / len(probs)) if probs else 1.0
             tok_per_sec = num_tokens / gen_time if gen_time > 0 else 0
             
@@ -159,9 +192,7 @@ def chat():
                     "context_left": context_left
                 }))
             else:
-                print(f"\n {config.gpt_prefix}  > {response}")
-                print(f" └─ METRICS: [Perplexity: {perplexity:.2f}] [Tokens: {num_tokens}] [Speed: {tok_per_sec:.1f} tok/s] [Context Left: {context_left}]")
-                print("-" * 50)
+                print(f" └─ {num_tokens} tok · {tok_per_sec:.1f} tok/s · PPL {perplexity:.2f} · {context_left} ctx left\n")
                 
             history.append({"from": "gpt", "value": response})
             

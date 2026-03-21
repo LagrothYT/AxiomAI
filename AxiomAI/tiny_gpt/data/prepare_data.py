@@ -21,10 +21,15 @@ def process_pretrain(tokenizer):
     print("Processing data for pretraining...")
     jsonl_files = glob.glob(os.path.join(config.data_dir, "*.jsonl"))
     
+    from tqdm import tqdm
+    total_size = sum(os.path.getsize(f) for f in jsonl_files)
+    pbar = tqdm(total=total_size, unit='B', unit_scale=True, desc="Prep: Pretrain")
+    
     all_tokens = []
     for file_path in jsonl_files:
         with open(file_path, "r", encoding="utf-8") as f:
             for line in f:
+                pbar.update(len(line.encode('utf-8')))
                 try:
                     data = json.loads(line)
                     text = ""
@@ -34,6 +39,7 @@ def process_pretrain(tokenizer):
                     all_tokens.extend(tokens)
                 except json.JSONDecodeError:
                     continue
+    pbar.close()
                     
     # Chunk into max_seq_len + 1 (for input and target)
     chunk_size = config.max_seq_len
@@ -61,6 +67,10 @@ def process_sft(tokenizer):
     print("Processing data for SFT...")
     jsonl_files = glob.glob(os.path.join(config.data_dir, "*.jsonl"))
     
+    from tqdm import tqdm
+    total_size = sum(os.path.getsize(f) for f in jsonl_files)
+    pbar = tqdm(total=total_size, unit='B', unit_scale=True, desc="Prep: SFT")
+    
     all_samples = [] # List of (input_ids, loss_mask)
     
     # Roles for formatting
@@ -71,6 +81,7 @@ def process_sft(tokenizer):
     for file_path in jsonl_files:
         with open(file_path, "r", encoding="utf-8") as f:
             for line in f:
+                pbar.update(len(line.encode('utf-8')))
                 try:
                     data = json.loads(line)
                     curr_ids = []
@@ -110,6 +121,7 @@ def process_sft(tokenizer):
                     all_samples.append((curr_ids, curr_mask))
                 except json.JSONDecodeError:
                     continue
+    pbar.close()
                     
     if not all_samples:
         print("Error: No samples found for SFT.")

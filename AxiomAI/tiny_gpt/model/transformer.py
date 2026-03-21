@@ -153,3 +153,35 @@ class TinyGPT(nn.Module):
         end_time = time.time()
         gen_time = end_time - start_time
         return idx, probs_out, gen_time
+
+    @torch.no_grad()
+    def generate_stream(self, idx, max_new_tokens, temperature=1.0, top_p=None, eos_id=None):
+        import time
+        start_time = time.time()
+        for _ in range(max_new_tokens):
+            idx_cond = idx if idx.size(1) <= self.max_seq_len else idx[:, -self.max_seq_len:]
+            
+            logits, _ = self(idx_cond)
+            logits = logits[:, -1, :] / temperature
+            
+            if top_p is not None:
+                sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                sorted_indices_to_remove = cumulative_probs > top_p
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                sorted_indices_to_remove[..., 0] = 0
+                indices_to_remove = torch.zeros_like(logits, dtype=torch.bool).scatter_(1, sorted_indices, sorted_indices_to_remove)
+                logits[indices_to_remove] = -float('Inf')
+                
+            probs = F.softmax(logits, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            token_prob = probs.gather(1, idx_next).item()
+            
+            idx = torch.cat((idx, idx_next), dim=1)
+            
+            yield idx_next.item(), token_prob
+            
+            if eos_id is not None and idx_next.item() == eos_id:
+                break
+                
+        yield None, time.time() - start_time

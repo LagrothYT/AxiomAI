@@ -16,24 +16,26 @@ def format_size(size_bytes):
 def get_data_specs():
     data_path = os.path.join(config.data_dir, "data.jsonl")
     if not os.path.exists(data_path):
-        return " [!] data.jsonl not found"
-        
+        return "[!] data.jsonl not found"
+
     raw_size = os.path.getsize(data_path)
-    true_chars = 0
+    content_chars = 0
+    conv_count = 0
     with open(data_path, "r", encoding="utf-8") as f:
         for line in f:
             try:
                 item = json.loads(line)
+                conv_count += 1
                 for conv in item.get("conversations", []):
-                    true_chars += len(conv.get("value", ""))
+                    content_chars += len(conv.get("value", ""))
             except: continue
 
     specs = [
-        f"File:      {os.path.basename(data_path)} ({format_size(raw_size)})",
-        f"True Size: {true_chars:,} chars"
+        f"File:         {os.path.basename(data_path)} ({format_size(raw_size)})",
+        f"Convos:       {conv_count:,}",
+        f"Content:      {content_chars:,} chars"
     ]
-    
-    # Optional token count if tokenizer exists
+
     tok_path = os.path.join(config.tokenizer_dir, "tokenizer.json")
     if os.path.exists(tok_path):
         try:
@@ -49,13 +51,12 @@ def get_data_specs():
                             text += f"{conv['from']}: {conv['value']} "
                         total_tokens += len(tokenizer.encode(text))
                     except: continue
-            specs.append(f"Tokens:    {total_tokens:,} tokens")
+            specs.append(f"Tokens:       {total_tokens:,}")
         except: pass
-        
-    return "\n ".join(specs)
+
+    return "\n  ".join(specs)
 
 def run_command(command):
-# ... existing run_command ...
     try:
         # We use sys.executable to ensure we use the same python interpreter
         full_command = [sys.executable] + command
@@ -74,20 +75,19 @@ def clear_screen():
 def get_status():
     status = []
     
-    # Tokenizer
     tok_path = os.path.join(config.tokenizer_dir, "tokenizer.json")
     tok_exists = os.path.exists(tok_path)
-    status.append(f"{'Tokenizer:':<18} [{'X' if tok_exists else ' '}]")
+    status.append(f"  {'Tokenizer:':<18} [{'X' if tok_exists else ' '}]")
     
-    # Data
     pre_path = os.path.join(config.processed_data_dir, "pretrain.pt")
     sft_path = os.path.join(config.processed_data_dir, "sft.pt")
-    status.append(f"{'Pretrain Data:':<18} [{'X' if os.path.exists(pre_path) else ' '}]")
-    status.append(f"{'SFT Data:':<18} [{'X' if os.path.exists(sft_path) else ' '}]")
+    status.append(f"  {'Pretrain Data:':<18} [{'X' if os.path.exists(pre_path) else ' '}]")
+    status.append(f"  {'SFT Data:':<18} [{'X' if os.path.exists(sft_path) else ' '}]")
     
-    # Model
-    model_exists = os.path.exists(config.best_model_path)
-    status.append(f"{'Model Checkpoint:':<18} [{'X' if model_exists else ' '}]")
+    pretrain_path = config.best_model_path.replace("best.pt", "pretrain_best.pt")
+    sft_path = config.best_model_path.replace("best.pt", "sft_best.pt")
+    status.append(f"  {'Pretrain Model:':<18} [{'X' if os.path.exists(pretrain_path) else ' '}]")
+    status.append(f"  {'SFT Model:':<18} [{'X' if os.path.exists(sft_path) else ' '}]")
     
     return "\n".join(status)
     
@@ -115,41 +115,51 @@ def interactive_menu():
             (os.path.join(config.processed_data_dir, "sft.pt"), "SFT Data")
         ],
         "6": [
-            (os.path.join(config.tokenizer_dir, "tokenizer.json"), "Tokenizer"),
-            (config.best_model_path, "Model Checkpoint")
+            (os.path.join(config.tokenizer_dir, "tokenizer.json"), "Tokenizer")
         ]
     }
     last_error_choice = None
     while True:
         clear_screen()
-        print("=== TinyGPT Multi-Tool ===")
+        print("  TinyGPT Multi-Tool")
+        print("  " + "─" * 30)
         if last_error_choice:
-            print(f" [!] LAST OPERATION FAILED (Option {last_error_choice})")
-        print("\n--- Project Status ---")
+            print(f"  [!] LAST OPERATION FAILED (Option {last_error_choice})")
+        print()
+        print("  Status")
         print(get_status())
-        print("\n--- Data Specs ---")
-        print(" " + get_data_specs())
-        print("-" * 26)
-        print("1. Train Tokenizer")
-        print("2. Data Preprocessing (Pretrain mode)")
-        
+        print()
+        print("  Data")
+        print("  " + get_data_specs())
+        print()
+        print("  " + "─" * 30)
+        print("  1. Train Tokenizer")
+        print("  2. Preprocess Data (Pretrain)")
+
         req3 = ", ".join(name for path, name in prereqs["3"] if not os.path.exists(path))
-        print(f"3. Pretrain Model {'[Requires: ' + req3 + ']' if req3 else ''}")
-        
-        print("4. Data Preprocessing (SFT mode)")
-        
+        print(f"  3. Pretrain Model" + (f"  [Requires: {req3}]" if req3 else ""))
+
+        print("  4. Preprocess Data (SFT)")
+
         req5 = ", ".join(name for path, name in prereqs["5"] if not os.path.exists(path))
-        print(f"5. SFT Fine-tune Model {'[Requires: ' + req5 + ']' if req5 else ''}")
-        
+        print(f"  5. SFT Fine-tune" + (f"  [Requires: {req5}]" if req5 else ""))
+
         req6 = ", ".join(name for path, name in prereqs["6"] if not os.path.exists(path))
-        print(f"6. Interactive Chat {'[Requires: ' + req6 + ']' if req6 else ''}")
+        print(f"  6. Chat" + (f"  [Requires: {req6}]" if req6 else ""))
+
+        print("  7. Exit")
+        print("  " + "─" * 30)
         
-        print("7. Exit")
-        
-        choice = input("\nSelect an option (1-7): ").strip()
+        choice = input("\n  > ").strip()
         
         if choice in prereqs:
             missing = [name for path, name in prereqs[choice] if not os.path.exists(path)]
+            if choice == "6":
+                pre_path = config.best_model_path.replace("best.pt", "pretrain_best.pt")
+                sft_path = config.best_model_path.replace("best.pt", "sft_best.pt")
+                if not os.path.exists(pre_path) and not os.path.exists(sft_path):
+                    missing.append("Target Model Checkpoint (Run Option 3 first)")
+            
             if missing:
                 print(f"\n[!] Error: Missing prerequisites: {', '.join(missing)}")
                 input("\nPress Enter to continue...")
@@ -187,7 +197,11 @@ def interactive_menu():
         input("\nPress Enter to continue...")
 
 def main():
-    interactive_menu()
+    try:
+        interactive_menu()
+    except KeyboardInterrupt:
+        print("\nExiting...")
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()
