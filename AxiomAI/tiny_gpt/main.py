@@ -114,7 +114,7 @@ def interactive_menu():
             (os.path.join(config.tokenizer_dir, "tokenizer.json"), "Tokenizer"),
             (os.path.join(config.processed_data_dir, "sft.pt"), "SFT Data")
         ],
-        "6": [
+        "8": [
             (os.path.join(config.tokenizer_dir, "tokenizer.json"), "Tokenizer")
         ]
     }
@@ -144,17 +144,20 @@ def interactive_menu():
         req5 = ", ".join(name for path, name in prereqs["5"] if not os.path.exists(path))
         print(f"  5. SFT Fine-tune" + (f"  [Requires: {req5}]" if req5 else ""))
 
-        req6 = ", ".join(name for path, name in prereqs["6"] if not os.path.exists(path))
-        print(f"  6. Chat" + (f"  [Requires: {req6}]" if req6 else ""))
+        print("  6. Train Image VAE (The Eyes)")
+        print("  7. Train Image Diffusion (The Brain)")
 
-        print("  7. Exit")
+        req8 = ", ".join(name for path, name in prereqs["8"] if not os.path.exists(path))
+        print(f"  8. Chat" + (f"  [Requires: {req8}]" if req8 else ""))
+
+        print("  9. Exit")
         print("  " + "─" * 30)
         
         choice = input("\n  > ").strip()
         
         if choice in prereqs:
             missing = [name for path, name in prereqs[choice] if not os.path.exists(path)]
-            if choice == "6":
+            if choice == "8":
                 pre_path = config.best_model_path.replace("best.pt", "pretrain_best.pt")
                 sft_path = config.best_model_path.replace("best.pt", "sft_best.pt")
                 if not os.path.exists(pre_path) and not os.path.exists(sft_path):
@@ -177,12 +180,16 @@ def interactive_menu():
         elif choice == "5":
             success = run_command(["train.py", "--mode", "sft"])
         elif choice == "6":
+            success = run_command(["-m", "image_generation.train", "--mode", "vae"])
+        elif choice == "7":
+            success = run_command(["-m", "image_generation.train", "--mode", "diffusion"])
+        elif choice == "8":
             print("\n--- Chat Settings ---")
             temp = get_validated_input("Temperature", config.temperature, 0.1, 2.0)
             top_p = get_validated_input("Top-p", config.top_p, 0.0, 1.0)
             max_tokens = get_validated_input("Max New Tokens", config.max_new_tokens, 1, config.max_seq_len, as_int=True)
             success = run_command(["chat.py", "--temperature", str(temp), "--top_p", str(top_p), "--max_new_tokens", str(max_tokens)])
-        elif choice == "7":
+        elif choice == "9":
             print("Exiting...")
             break
         else:
@@ -191,7 +198,7 @@ def interactive_menu():
             
         if success:
             last_error_choice = None
-        elif choice in ["1", "2", "3", "4", "5", "6"]:
+        elif choice in ["1", "2", "3", "4", "5", "6", "7", "8"]:
             last_error_choice = choice
             
         input("\nPress Enter to continue...")

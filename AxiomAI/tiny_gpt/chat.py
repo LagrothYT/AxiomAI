@@ -8,6 +8,7 @@ import math
 import config
 from model.transformer import TinyGPT
 from tokenizer.bpe import BPETokenizer
+from image_generation.bridge import ModelBridge
 
 def print_header():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -59,6 +60,8 @@ def chat():
         model.load_state_dict(checkpoint)
     model.eval()
     
+    bridge = ModelBridge()
+    
     history = []
     
     if not args.json_output:
@@ -90,6 +93,18 @@ def chat():
                     print(f" Top-p:       {args.top_p}")
                     print(f" Max Context: {config.max_seq_len} tokens")
                     print("-" * 26 + "\n")
+                continue
+                
+            if user_input.strip().startswith("/imagine"):
+                bridge_result = bridge.process_chat_message(user_input)
+                if bridge_result.get("type") == "image":
+                    if not args.json_output:
+                        print(f" [SYSTEM] Direct User Routing: Image Pipeline initialized for: {bridge_result['prompt']}")
+                    history.append({"from": "human", "value": user_input})
+                    history.append({"from": "gpt", "value": "[Image Generated Successfully]"})
+                else:
+                    if not args.json_output:
+                        print(f" [SYSTEM] Error: {bridge_result.get('content', 'Unknown bridge error')}")
                 continue
                 
             history.append({"from": "human", "value": user_input})
@@ -175,6 +190,14 @@ def chat():
                 print()
                 
             response = response.strip()
+            
+            bridge_result = bridge.process_chat_message(response)
+            if bridge_result.get("type") == "image":
+                if not args.json_output:
+                    print(f" [SYSTEM] Routing to Image Generator Pipeline: {bridge_result['prompt']}")
+            elif bridge_result.get("type") == "error":
+                if not args.json_output:
+                    print(f" [SYSTEM] Generator Error: {bridge_result.get('content')}")
             
             # Context info
             context_left = max(0, config.max_seq_len - (initial_seq_len + num_tokens))

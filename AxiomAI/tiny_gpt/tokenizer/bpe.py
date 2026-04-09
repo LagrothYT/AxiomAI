@@ -185,17 +185,20 @@ class BPETokenizer:
                 
         return encoded_ids
 
-    def decode(self, ids):
-        tokens = [self.id_to_token.get(i, "<UNK>") for i in ids]
+    def decode(self, ids, clean_up=False):
+        tokens = [self.id_to_token.get((i if isinstance(i, int) else i.item()), "<UNK>") for i in ids]
         text = ""
         for token in tokens:
             if token in self.special_tokens:
-                text += f" {token} "
+                text += f"{token} "
             elif token.endswith("</w>"):
                 text += token.replace("</w>", " ")
             else:
                 text += token
-        return " ".join(text.split())
+                
+        if clean_up:
+            return " ".join(text.split())
+        return text
 
     def save(self, path):
         serializable_merges = {f"{k[0]}<SEP>{k[1]}": v for k, v in self.merges.items()}
