@@ -9,6 +9,7 @@ import config
 from model.transformer import TinyGPT
 from tokenizer.bpe import BPETokenizer
 from image_generation.bridge import ModelBridge
+from utils import safe_load
 
 def print_header():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -25,7 +26,7 @@ def chat():
     parser.add_argument("--json_output", action="store_true")
     args = parser.parse_args()
     
-    device = torch.device("cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Load tokenizer
     tokenizer_path = os.path.join(config.tokenizer_dir, "tokenizer.json")
@@ -53,7 +54,7 @@ def chat():
         print(f"Error: Model checkpoint not found.")
         return
         
-    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    checkpoint = safe_load(model_path, map_location=device)
     if "model" in checkpoint:
         model.load_state_dict(checkpoint["model"])
     else:
@@ -171,8 +172,6 @@ def chat():
             initial_seq_len = input_ids.size(1)
             
             for item, val in stream:
-                if item is None:
-                    break
                 probs.append(val)
                 num_tokens += 1
                 token_text = tokenizer.decode([item])

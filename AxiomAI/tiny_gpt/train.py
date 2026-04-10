@@ -12,6 +12,7 @@ import copy
 import config
 from model.transformer import TinyGPT
 from tokenizer.bpe import BPETokenizer
+from utils import safe_load
 
 def train():
     parser = argparse.ArgumentParser()
@@ -25,12 +26,7 @@ def train():
     torch.manual_seed(config.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(config.seed)
-    device = torch.device("cpu")
-    if os.environ.get("USE_ROCM") == "1":
-        # Support ROCm if requested and available via torch.cuda (ROCm often maps to cuda)
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            print("Using ROCm (CUDA-mapped) device")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     print(f"Using device: {device}")
     
@@ -114,7 +110,7 @@ def train():
             return float(current_step + 1) / float(warmup_steps)
         # Cosine decay from 1.0 down to min_lr ratio
         progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
-        return config.min_lr + (1.0 - config.min_lr) * 0.5 * (1.0 + math.cos(math.pi * progress))
+        return config.min_lr_ratio + (1.0 - config.min_lr_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
     
     scheduler = LambdaLR(optimizer, lr_lambda)
     best_val_loss = float('inf')
@@ -125,7 +121,7 @@ def train():
     if args.resume:
         if os.path.exists(args.resume):
             print(f"Resuming training from {args.resume}...")
-            checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
+            checkpoint = safe_load(args.resume, map_location=device)
             if "model" in checkpoint:
                 model.load_state_dict(checkpoint["model"])
                 if "optimizer" in checkpoint:
@@ -219,7 +215,6 @@ def train():
             print(f"Epoch {epoch+1}: Loss [T: {avg_train_loss:.4f}, V: {avg_val_loss:.4f}] | {ppl_label} [T: {train_ppl:.2f}, V: {val_ppl:.2f}] | LR: {optimizer.param_groups[0]['lr']:.6f}{best_marker}")
             
             # Check for improvement and save best model during training
-            stop_training = False # Initialize for this epoch
             if is_best:
                 best_val_loss = avg_val_loss
                 best_model_state = copy.deepcopy(model.state_dict())
@@ -238,9 +233,6 @@ def train():
             # Early stopping check
             if config.early_stopping_enabled and epochs_no_improve >= config.early_stopping_patience:
                 print(f"Early stopping triggered after {epoch+1} epochs.")
-                stop_training = True
-                
-            if stop_training:
                 break
                     
     except KeyboardInterrupt:

@@ -5,6 +5,15 @@ import heapq
 from collections import Counter, defaultdict
 from tqdm import tqdm
 
+# GPT-2-style pre-tokenization: separates punctuation, contractions, and numbers before BPE
+PRE_TOK_PATTERN = re.compile(
+    r"""'s|'t|'re|'ve|'m|'ll|'d"""
+    r"""| ?[a-zA-Z]+"""
+    r"""| ?[0-9]+"""
+    r"""| ?[^\sa-zA-Z0-9]+"""
+    r"""|\s+"""
+)
+
 class BPETokenizer:
     def __init__(self, vocab_size=5000):
         self.vocab_size = vocab_size
@@ -12,6 +21,11 @@ class BPETokenizer:
         self.id_to_token = {}  # id -> token
         self.merges = {}  # (p1, p2) -> merged_token
         self.special_tokens = ["<PAD>", "<UNK>", "<BOS>", "<EOS>", "[HUMAN]", "[GPT]"]
+
+    @staticmethod
+    def _pre_tokenize(text):
+        """Split text into words using GPT-2-style regex pre-tokenization."""
+        return [w.strip() for w in re.findall(PRE_TOK_PATTERN, text) if w.strip()]
         
     def train(self, texts):
         # Add special tokens
@@ -24,7 +38,7 @@ class BPETokenizer:
         # word_freqs: word_str -> frequency
         word_freqs = Counter()
         for text in texts:
-            for word in text.split():
+            for word in self._pre_tokenize(text):
                 word_freqs[" ".join(list(word)) + " </w>"] += 1
         
         # Initial symbols and pair statistics
@@ -119,11 +133,20 @@ class BPETokenizer:
         if not text:
             return []
             
-        # Isolate special tokens
+        # Isolate special tokens then pre-tokenize
         for special in self.special_tokens:
             text = text.replace(special, f" {special} ")
             
-        words = text.split()
+        # Pre-tokenize: split whitespace first, then sub-split non-special words
+        raw_words = text.split()
+        words = []
+        for w in raw_words:
+            if w in self.special_tokens:
+                words.append(w)
+            else:
+                sub = self._pre_tokenize(w)
+                words.extend(sub if sub else [w])
+        
         encoded_ids = []
         
         for word in words:

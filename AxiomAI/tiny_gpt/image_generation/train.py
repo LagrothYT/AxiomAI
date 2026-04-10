@@ -17,6 +17,7 @@ from image_generation.model.vae import VAE
 from image_generation.model.text_encoder import TextEncoder
 from image_generation.model.diffusion import LatentDiffusion
 from image_generation.image_loader import ImageDataset
+from utils import safe_load
 
 def train_vae(config):
     print("Initiating VAE 'The Eyes' pre-training pipeline...")
@@ -32,7 +33,7 @@ def train_vae(config):
     start_epoch = 0
     if os.path.exists(save_path):
         print(f"Resuming VAE from {save_path}...")
-        checkpoint = torch.load(save_path, map_location=device, weights_only=False)
+        checkpoint = safe_load(save_path, map_location=device)
         vae.load_state_dict(checkpoint["model"])
         start_epoch = checkpoint.get("epoch", 0) + 1
         
@@ -108,7 +109,7 @@ def train_diffusion(config):
     if not os.path.exists(vae_path):
         print(f"[!] Frozen VAE missing at {vae_path}. You must finish Option 6 first.")
         return
-    vae.load_state_dict(torch.load(vae_path, map_location=device, weights_only=False)["model"])
+    vae.load_state_dict(safe_load(vae_path, map_location=device)["model"])
     vae.eval()
     for param in vae.parameters():
         param.requires_grad = False
@@ -123,7 +124,7 @@ def train_diffusion(config):
     save_path = os.path.join(config.output_dir_model, "diffusion_best.pt")
     start_epoch = 0
     if os.path.exists(save_path):
-        chk = torch.load(save_path, map_location=device, weights_only=False)
+        chk = safe_load(save_path, map_location=device)
         text_encoder.load_state_dict(chk["text_encoder"])
         diffusion.load_state_dict(chk["diffusion"])
         start_epoch = chk.get("epoch", 0) + 1

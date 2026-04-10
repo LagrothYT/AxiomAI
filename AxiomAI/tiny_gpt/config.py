@@ -22,7 +22,7 @@ DEFAULT_CONFIG = {
         "val_split": 0.1,
         "grad_clip": 1.0,
         "weight_decay": 0.01,
-        "min_lr": 0.1,
+        "min_lr_ratio": 0.1,
         "warmup_steps": 100,
         "seed": 42
     },
@@ -65,8 +65,13 @@ def load_config():
     with open(CONFIG_FILE, "r") as f:
         config_data = json.load(f)
         
-    # Shallow merge new defaults into existing config
+    # Migrate renamed keys (must run before flat var assignment)
     updated = False
+    if "training" in config_data and "min_lr" in config_data["training"]:
+        config_data["training"]["min_lr_ratio"] = config_data["training"].pop("min_lr")
+        updated = True
+        
+    # Shallow merge new defaults into existing config
     for category, settings in DEFAULT_CONFIG.items():
         if category not in config_data:
             config_data[category] = settings
@@ -106,7 +111,7 @@ early_stopping_enabled = _config.get("training", {}).get("early_stopping_enabled
 val_split = _config.get("training", {}).get("val_split", DEFAULT_CONFIG["training"]["val_split"])
 grad_clip = _config.get("training", {}).get("grad_clip", DEFAULT_CONFIG["training"]["grad_clip"])
 weight_decay = _config.get("training", {}).get("weight_decay", DEFAULT_CONFIG["training"]["weight_decay"])
-min_lr = _config.get("training", {}).get("min_lr", DEFAULT_CONFIG["training"]["min_lr"])
+min_lr_ratio = _config.get("training", {}).get("min_lr_ratio", DEFAULT_CONFIG["training"]["min_lr_ratio"])
 warmup_steps = _config.get("training", {}).get("warmup_steps", DEFAULT_CONFIG["training"]["warmup_steps"])
 seed = _config.get("training", {}).get("seed", DEFAULT_CONFIG["training"]["seed"])
 

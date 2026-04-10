@@ -70,9 +70,11 @@ class UNetBlock(nn.Module):
         return h + self.res_conv(x)
 
 class LatentDiffusion(nn.Module):
-    def __init__(self, in_channels=4, text_embed_dim=256, time_embed_dim=256):
+    def __init__(self, in_channels=4, text_embed_dim=256, time_embed_dim=256,
+                 down_channels=(64, 128)):
         super().__init__()
         self.time_embed_dim = time_embed_dim
+        ch0, ch1 = down_channels
         
         self.time_mlp = nn.Sequential(
             nn.Linear(1, time_embed_dim),
@@ -80,16 +82,16 @@ class LatentDiffusion(nn.Module):
             nn.Linear(time_embed_dim, time_embed_dim)
         )
         
-        self.down1 = UNetBlock(in_channels, 64, time_embed_dim, text_embed_dim)
-        self.down2 = UNetBlock(64, 128, time_embed_dim, text_embed_dim)
+        self.down1 = UNetBlock(in_channels, ch0, time_embed_dim, text_embed_dim)
+        self.down2 = UNetBlock(ch0, ch1, time_embed_dim, text_embed_dim)
         
         self.pool = nn.MaxPool2d(2)
         self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
         
-        self.mid = UNetBlock(128, 128, time_embed_dim, text_embed_dim)
+        self.mid = UNetBlock(ch1, ch1, time_embed_dim, text_embed_dim)
         
-        self.up2 = UNetBlock(128 + 64, 64, time_embed_dim, text_embed_dim)
-        self.up1 = UNetBlock(64, in_channels, time_embed_dim, text_embed_dim)
+        self.up2 = UNetBlock(ch1 + ch0, ch0, time_embed_dim, text_embed_dim)
+        self.up1 = UNetBlock(ch0, in_channels, time_embed_dim, text_embed_dim)
         
         self.final_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
         

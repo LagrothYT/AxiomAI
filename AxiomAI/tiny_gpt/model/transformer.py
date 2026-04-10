@@ -115,7 +115,6 @@ class TinyGPT(nn.Module):
         probs_out = []
         start_time = time.time()
         for _ in range(max_new_tokens):
-            # ... (rest of the logic stays same)
             # Crop to max_seq_len
             idx_cond = idx if idx.size(1) <= self.max_seq_len else idx[:, -self.max_seq_len:]
             
@@ -183,5 +182,3 @@ class TinyGPT(nn.Module):
             
             if eos_id is not None and idx_next.item() == eos_id:
                 break
-                
-        yield None, time.time() - start_time

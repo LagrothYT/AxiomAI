@@ -11,6 +11,7 @@ from image_generation.model.diffusion import LatentDiffusion
 from image_generation.scheduler import DDPMScheduler
 import config as text_config
 from tokenizer.bpe import BPETokenizer
+from utils import safe_load
 
 class ModelBridge:
     def __init__(self, image_pipeline_config=None):
@@ -41,10 +42,10 @@ class ModelBridge:
         self.image_config.vocab_size = len(self.tokenizer.vocab) # Force sync parameter
             
         self.vae = VAE(latent_channels=self.image_config.vae_channels).to(self.device)
-        self.vae.load_state_dict(torch.load(vae_path, map_location=self.device, weights_only=False)["model"])
+        self.vae.load_state_dict(safe_load(vae_path, map_location=self.device)["model"])
         self.vae.eval()
         
-        chk = torch.load(diff_path, map_location=self.device, weights_only=False)
+        chk = safe_load(diff_path, map_location=self.device)
         self.text_encoder = TextEncoder(self.image_config.vocab_size, self.image_config.text_embedding_dim, self.image_config.text_max_seq_len).to(self.device)
         self.text_encoder.load_state_dict(chk["text_encoder"])
         self.text_encoder.eval()
