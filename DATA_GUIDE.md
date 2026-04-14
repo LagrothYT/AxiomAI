@@ -1,86 +1,193 @@
-# TinyGPT Data Formatting Guide
+# AxiomAI Data Formatting Guide
 
-This guide explicitly details how you must format your training data for all modules of the TinyGPT architecture. The neural networks depend on these exact structures to learn correctly without mathematically corrupting.
+This guide details exactly how to format training data for every pipeline in AxiomAI.
+The neural networks depend on these structures to learn correctly.
 
 ---
 
 ## 1. Text Pretraining (`data/pretrain/`)
 
-Pretraining is the phase where you teach the AI grammar, math, facts, and raw knowledge from scratch. It is not a chatbot yet; it is simply a raw text predictor.
+Pretraining teaches the AI grammar, facts, and raw knowledge from scratch. It is not a
+chatbot yet — it is a raw text predictor.
 
 **Where to put it:**
-Place all your files inside `data/pretrain/`. They must end in `.jsonl` (JSON Lines).
+Place all files inside `data/pretrain/`. They must end in `.jsonl` (JSON Lines).
 
-**How it must look:**
-Every line in the file must be a valid JSON object. For pretraining, we strictly extract only the `value` fields. You do not need roles like "human" or "gpt", just raw text blocks.
+**Format:**
+Every line must be a valid JSON object. Only the `value` fields are extracted.
 
 ```json
-{"conversations": [{"value": "The mitochondria is the powerhouse of the cell. It produces energy..."}]}
+{"conversations": [{"value": "The mitochondria is the powerhouse of the cell."}]}
 {"conversations": [{"value": "def hello_world():\n    print('Hello World')"}]}
 ```
 
-**Best Practices:**
+**Best practices:**
 - Feed it large blocks of clean text (Wikipedia articles, books, code repositories).
-- There is no conversational formatting here. Just raw knowledge. Do not try to teach it formatting during pretraining.
+- No conversational formatting here. Just raw knowledge.
 
 ---
 
-## 2. Supervised Fine-Tuning (SFT) (`data/sft/`)
+## 2. Supervised Fine-Tuning (`data/sft/`)
 
-SFT is where you take your smart, pre-trained brain and teach it discipline. You teach it how to behave as a chatbot, how to obey constraints, and what a "conversation" looks like.
+SFT teaches the pretrained brain discipline — how to behave as a chatbot, follow
+instructions, and hold conversations.
 
 **Where to put it:**
 Place all `.jsonl` files inside `data/sft/`.
 
-**How it must look:**
-The data compiler reads the `"from"` tags to figure out exactly how to map penalties and rewards to the neural network.
+**Format:**
+The `"from"` tag tells the training loop how to apply the loss mask.
 
 ```json
-{"conversations": [{"from": "system", "value": "You are a sarcastic AI."}, {"from": "human", "value": "What is 2+2?"}, {"from": "gpt", "value": "It is four. Obviously."}]}
+{"conversations": [{"from": "system", "value": "You are a helpful assistant."}, {"from": "human", "value": "What is 2+2?"}, {"from": "gpt", "value": "It is 4."}]}
 ```
 
-### The 3 Core Roles:
-1. **`"system"`**: Optional. Tells the model its overarching master-prompt or persona. The neural network's loss logic is hardcoded to *obey* this, but it will never be punished for not memorizing it word-for-word.
-2. **`"human"`**: Mandatory. The prompt. The network applies a `0` loss mask here, meaning it knows it shouldn't try to auto-generate the human's queries.
-3. **`"gpt"`**: Mandatory. The answer. The network applies a `1` loss mask here. This is the **only** text the AI is actively trained and forced to predict.
+**The 3 core roles:**
 
-**Best Practices:**
-- Always ensure "gpt" is the one doing the heavy lifting.
-- Multi-turn conversations are allowed! Just chain them: `system -> human -> gpt -> human -> gpt`.
+1. **`"system"`** — Optional. Sets the model's persona or master-prompt. Loss is not applied here.
+2. **`"human"`** — Mandatory. The user's message. Loss mask = `0` (model is not trained to predict this).
+3. **`"gpt"`** — Mandatory. The model's response. Loss mask = `1`. This is the only text the model is actively trained to predict.
+
+**Best practices:**
+- Multi-turn conversations are allowed: `system → human → gpt → human → gpt`.
+- Always ensure `"gpt"` is doing the heavy lifting — it is the only supervised signal.
 
 ---
 
-## 3. Image Generation Pipeline (`Photos/` or `image_generation/data/`)
+## 3. Image Generation (`Photos/`)
 
-To train the VAE (The Eyes) and Diffusion (The Brain) models, you need a collection of images paired with descriptive text (captions). 
+Trains the VAE (The Eyes) and Latent Diffusion (The Brain) models on a photo dataset.
 
 **Where to put it:**
-Place your images inside the data directory defined in your `image_config.ini` (typically `image_generation/data` or `Photos/`).
+Place images inside the directory set in `config/image_config.ini` → `data_dir`
+(default: `Photos/`).
 
-**How to format it:**
-There are no JSON files here. The `image_loader.py` engine scans the raw directory for images (PNG, JPG, JPEG) and smartly grabs captions based on the filesystem. You have two options:
+**No JSON files here.** The `image_loader.py` engine scans for images and resolves captions
+from the filesystem.
 
-### Option A: The Text-Pairing Method (Highest Quality)
-Place a `.txt` file with the **exact same name** directly next to the image. The loader will extract the text inside.
-```text
+### Option A — Text-pairing method (highest quality)
+Place a `.txt` file with the exact same filename next to the image.
+
+```
 Photos/
-  |- a_cool_dog.jpg
-  |- a_cool_dog.txt     <-- Contains: "A golden retriever wearing sunglasses on a beach."
-  |- red_car.png
-  |- red_car.txt        <-- Contains: "A shiny red sports car driving down a neon highway."
+  ├── golden_retriever.jpg
+  ├── golden_retriever.txt    ← "A golden retriever wearing sunglasses on a beach."
+  ├── red_car.png
+  └── red_car.txt             ← "A shiny red sports car on a neon highway."
 ```
 
-### Option B: The Directory/Filename Fallback (Fastest)
-If no `.txt` file exists, the loader uses the filename or directory name as the caption fallback.
-```text
+### Option B — Directory/filename fallback (fastest)
+If no `.txt` file exists, the filename or parent directory name becomes the caption.
+
+```
 Photos/
-  |- retro_city_skyline.jpg       <-- Caption becomes: "retro_city_skyline"
-  |- cyberpunk_cars/
-      |- car1.jpg                 <-- Caption becomes: "cyberpunk_cars"
-      |- car2.jpg                 <-- Caption becomes: "cyberpunk_cars"
+  ├── retro_city_skyline.jpg       ← Caption: "retro_city_skyline"
+  └── cyberpunk_cars/
+      ├── car1.jpg                 ← Caption: "cyberpunk_cars"
+      └── car2.jpg                 ← Caption: "cyberpunk_cars"
 ```
 
-**Best Practices for Images:**
-- Keep descriptions extremely precise and visually descriptive.
-- Ensure all images are clean. Corrupted images will be automatically skipped by the loader to prevent crashing the PyTorch queue.
-- Aspect ratio matters. The custom `image_config.ini` enforces a specific width/height scale (which will squash or stretch your images if they are drastically mismatched).
+**Best practices:**
+- Keep descriptions visually precise.
+- Corrupted images are automatically skipped.
+- Resolution is controlled by `image_config.ini` → `image_width` / `image_height`. Images are
+  resized to fit. Both dimensions must be divisible by `vae_downsample_factor` (default 4).
+
+---
+
+## 4. Video Generation (`Videos/`)
+
+Trains the VideoLatentDiffusion model on a dataset of video clips.
+
+**Where to put it:**
+Place clips inside the directory set in `config/video_config.ini` → `data_dir`
+(default: `Videos/`).
+
+Two clip formats are supported.
+
+---
+
+### Format A — Frame folders (recommended, highest compatibility)
+
+Each clip is a subdirectory containing sequential image files. Files are sorted
+lexicographically, so zero-pad your filenames for correct ordering.
+
+```
+Videos/
+  ├── sunset_beach/
+  │   ├── frame_0001.jpg
+  │   ├── frame_0002.jpg
+  │   ├── frame_0003.jpg
+  │   └── ...
+  ├── sunset_beach.txt          ← Caption: "A slow sunset over a calm beach."
+  │
+  ├── running_dog/
+  │   ├── 0001.png
+  │   ├── 0002.png
+  │   └── ...
+  └── running_dog.txt           ← Caption: "A dog running through a field of grass."
+```
+
+Caption resolution priority for frame folders:
+1. Sibling `.txt` file: `Videos/clip_name.txt` — highest priority, use this.
+2. Inner `caption.txt`: `Videos/clip_name/caption.txt`
+3. Folder name as fallback: `"clip_name"`
+
+---
+
+### Format B — Video files (mp4, avi, mov, mkv, gif)
+
+Place video files directly inside the `Videos/` directory. Frames are extracted
+at load time using `torchvision.io` (preferred) or `opencv-python` (fallback).
+
+```
+Videos/
+  ├── sunset_beach.mp4
+  ├── sunset_beach.txt          ← Caption: "A slow sunset over a calm beach."
+  ├── running_dog.avi
+  └── running_dog.txt           ← Caption: "A dog running through a field of grass."
+```
+
+Caption resolution for video files:
+1. Sibling `.txt` file: `Videos/filename.txt` — use this.
+2. Filename stem as fallback: `"filename"`
+
+> **Note:** Format A (frame folders) is more reliable across all platforms and does not
+> require `opencv-python`. Use Format B only if you already have raw video files.
+
+---
+
+### Frame sampling
+
+During training, `num_frames` frames are sampled from each clip per batch:
+- **Training:** a random contiguous window is selected (temporal augmentation).
+- **Validation:** frames are evenly spaced (deterministic).
+- **Short clips** (fewer frames than `num_frames`): the last frame is repeated to reach `num_frames`.
+
+The `num_frames` setting is in `config/video_config.ini`. Start with `8` on CPU.
+
+---
+
+### Minimum dataset size
+
+For `freeze_spatial = True` (default): 50–200 clips is enough to teach temporal coherence.
+For `freeze_spatial = False` (full training): thousands of clips are needed.
+
+---
+
+### Resolution
+
+`frame_width` and `frame_height` in `video_config.ini` must match `image_width` and
+`image_height` in `image_config.ini`. The shared VAE was trained on one resolution —
+using a different resolution for video will produce incoherent latents.
+
+Both dimensions must be divisible by `vae_downsample_factor` (default 4).
+
+---
+
+## 5. Output locations
+
+| Pipeline | Generated output |
+| :--- | :--- |
+| Image (`/imagine`) | `out_image/latest_generation.jpg` |
+| Video (`/animate`) | `out_video/latest_generation.gif` and `out_video/latest_generation.mp4` (if imageio is installed) |

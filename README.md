@@ -1,35 +1,86 @@
-# TinyGPT - Your Own Tiny AI Chatbot + Image Generator
+# AxiomAI (TinyGPT)
 
-A complete from-scratch GPT-style language model plus a small image generator that runs on a normal laptop.
+A fully from-scratch AI studio built on PyTorch. Train a text chatbot, generate images from prompts, and generate short video clips — all from a single interactive menu.
 
-TinyGPT lets you train a real AI on your own chat data, talk to it like a friend, and even generate images by typing `/imagine` in the same chat.
+## Features
 
-It is small, educational, fun, and 100 percent yours. No cloud. No giant downloads.
-
----
-
-## What You Can Do
-
-- Chat with a friendly, personality-filled AI
-- Type `/imagine a red phone on a wooden table` and it generates a real image
-- Train everything yourself (text model + image model)
-- Run on CPU or AMD GPU with ROCm
+- **Custom BPE Tokenizer** — Built from scratch for efficient text encoding.
+- **Transformer (Text)** — Causal multi-head attention with RoPE and KV-cache, optimised for CPU.
+- **Dual Training Modes** — Pretraining and Supervised Fine-Tuning (SFT).
+- **Image Generation** — Latent Diffusion with a VAE encoder, DDPM/DDIM scheduler, and CFG.
+- **Video Generation** — Spatiotemporal Latent Diffusion using TemporalAttention layers inserted into the image UNet. Shares the image VAE and tokenizer — no re-training of those required.
+- **Hardware** — Default: CPU + 16 GB RAM. GPU: CUDA is auto-detected. ROCm: `export USE_ROCM=1`.
 
 ---
 
-## Quick Start (5 minutes)
+## Quick Start
 
-1. Open the `AxiomAI/tiny_gpt` folder
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Launch the menu:
-   ```bash
-   python main.py
-   ```
+**1. Install dependencies:**
+```bash
+pip install -r requirements.txt
+```
 
-That is it. Use the numbered menu to train and chat.
+**2. Launch the control center:**
+```bash
+python main.py
+```
+
+---
+
+## CLI Menu
+
+| Option | Action | Description |
+| :--- | :--- | :--- |
+| 1 | Train Tokenizer | Trains the BPE model on `data/*.jsonl` |
+| 2 | Pretrain Preprocessing | Prepares raw text for causal modelling |
+| 3 | Pretrain Model | Starts the main pretraining loop |
+| 4 | SFT Preprocessing | Prepares conversation data for instruction tuning |
+| 5 | SFT Fine-tune | Runs the Supervised Fine-Tuning phase |
+| 6 | Train Image VAE | Trains the VAE encoder/decoder on your photo dataset |
+| 7 | Train Image Diffusion | Trains the latent diffusion UNet on your photo dataset |
+| 9 | Train Video Diffusion | Trains the video diffusion UNet on your video clip dataset |
+| 10 | Launch Chat | Interactive chat with `/imagine` and `/animate` commands |
+| 11 | Exit | Close the studio |
+
+Prerequisite chains are enforced automatically — the menu will tell you exactly what is missing before it lets you run a step.
+
+---
+
+## Chat Commands
+
+Once in chat (option 10):
+
+| Command | Action |
+| :--- | :--- |
+| `/imagine <prompt>` | Generate a single image from a text prompt |
+| `/animate <prompt>` | Generate a short video clip from a text prompt |
+| `/clear` | Clear conversation history |
+| `/help` | Show all commands and current settings |
+| `/quit` | Exit the chat |
+
+---
+
+## Pipeline Overview
+
+```
+Text Pipeline
+─────────────
+data/pretrain/*.jsonl  →  [1] Tokenizer  →  [2] Preprocess  →  [3] Pretrain  →  [4/5] SFT  →  chat
+
+Image Pipeline
+──────────────
+Photos/  →  [6] VAE (The Eyes)  →  [7] Diffusion (The Brain)  →  /imagine in chat
+
+Video Pipeline
+──────────────
+Videos/                      →  [9] Video Diffusion  ──┐
+image_gen_model/vae_best.pt  ──────── (shared frozen) ─┘  →  /animate in chat
+```
+
+The video pipeline reuses the image VAE and your BPE tokenizer. You do not retrain them.
+Option 9 trains only the temporal attention layers inside the video UNet when
+`freeze_spatial = True` in `video_config.ini` (the default). This means the model
+learns inter-frame coherence while the spatial image knowledge is preserved.
 
 ---
 
@@ -37,144 +88,77 @@ That is it. Use the numbered menu to train and chat.
 
 ```
 tiny_gpt/
-  data/                  conversations (data.jsonl)
-  Photos/                images + captions for image training
-  model/                 trained models are saved here
-  tokenizer/             tokenizer files
-  out_image/             generated images appear here
-  main.py                main menu
-  chat.py                the chat interface
-  config/                text model settings
-  image_config.json      image generation settings
-  image_generation/      image VAE + diffusion code
+├── main.py                          Central control menu
+├── train.py                         Text model training (pretrain + SFT)
+├── chat.py                          Interactive chat + /imagine + /animate
+├── config.py                        Text model config loader
+├── utils.py                         Shared utilities
+│
+├── config/
+│   ├── config.ini                   Text model settings
+│   ├── image_config.ini             Image generation settings
+│   └── video_config.ini             Video generation settings
+│
+├── model/
+│   └── transformer.py               TinyGPT transformer architecture
+│
+├── tokenizer/
+│   ├── bpe.py                       BPE tokenizer implementation
+│   └── train_tokenizer.py           Tokenizer training script
+│
+├── data/
+│   ├── pretrain/                    Raw pretrain .jsonl files
+│   ├── sft/                         SFT .jsonl files
+│   ├── processed/                   Compiled .npy arrays
+│   └── prepare_data.py              Data preprocessing script
+│
+├── image_generation/
+│   ├── config.py                    ImageModelConfig
+│   ├── scheduler.py                 DDPM + DDIM noise scheduler
+│   ├── image_loader.py              ImageDataset (single-frame)
+│   ├── bridge.py                    ModelBridge (/imagine routing)
+│   ├── train.py                     VAE + Diffusion training
+│   └── model/
+│       ├── vae.py                   Variational Autoencoder
+│       ├── diffusion.py             LatentDiffusion UNet
+│       └── text_encoder.py          Transformer text encoder
+│
+├── video_generation/
+│   ├── config.py                    VideoModelConfig
+│   ├── video_loader.py              VideoDataset (frame sequences)
+│   ├── bridge.py                    VideoBridge (/animate routing)
+│   ├── train.py                     Video diffusion training
+│   └── model/
+│       ├── temporal_attention.py    TemporalAttention (T-dim self-attn)
+│       └── video_unet.py            VideoUNetBlock + VideoLatentDiffusion
+│
+├── Photos/                          Image training data
+├── Videos/                          Video training data (clips)
+├── image_gen_model/                 Saved image model weights (.pt)
+├── video_gen_model/                 Saved video model weights (.pt)
+├── out_image/                       Generated images
+└── out_video/                       Generated video clips (GIF + MP4)
 ```
 
 ---
 
-## The Chatbot
+## Hardware Notes
 
-### Data Format (`data/data.jsonl`)
-
-Each line is one conversation. Example:
-
-```json
-{"conversations": [
-  {"from": "human", "value": "it's so hot today I genuinely cannot think straight"},
-  {"from": "gpt", "value": "Heat does that. Your brain prioritizes cooling over everything else..."}
-]}
-```
-
-Add as many natural conversations as you want. More data gives the model better personality.
-
-### How to Chat
-
-1. Train the model using Options 1–5 in the main menu
-2. Choose **Option 8: Chat**
-3. Type normally
-4. Special commands:
-   ```
-   /imagine your prompt here   -> generates an image
-   /clear                      -> clears chat history
-   /quit                       -> exit
-   ```
-
-The chat shows live streaming, tokens per second, perplexity, and remaining context.
+| Scenario | Recommendation |
+| :--- | :--- |
+| CPU only | `num_frames = 8`, `batch_size = 1`, resolution ≤ 144×96 |
+| Consumer GPU 8 GB | `num_frames = 8–16`, `batch_size = 2–4`, resolution up to 256×256 |
+| `freeze_spatial = True` | Strongly recommended. Trains ~2–5% of video UNet params. Much less data needed. |
+| `freeze_spatial = False` | Full training from scratch. Needs a large clip dataset and a GPU. |
 
 ---
 
-## Image Generation
+## ROCm / CUDA
 
-TinyGPT can create images directly from the chat.
+```bash
+# ROCm
+export USE_ROCM=1
+python main.py
 
-### How to make good images
-
-**1. Add photos**
-
-Put them in `Photos/` (you can use subfolders like `Photos/phones/`)  
-Aim for 150–200+ images for decent results.
-
-**2. Add caption files**
-
-For every image `image.jpg` you MUST create a file named `image.txt` next to it.
-
-Example content of `image.txt`:
+# CUDA is detected automatically — no flag needed.
 ```
-A modern black smartphone lying on a wooden desk, natural lighting, close up
-```
-
-Keep captions short and descriptive.
-
-**3. Train the image models (in this exact order)**
-
-```
-Option 6 -> Train Image VAE (The Eyes)
-Option 7 -> Train Image Diffusion (The Brain)
-```
-
-**4. Generate images**
-
-In the chat just type:
-```
-/imagine a red phone floating in space with stars around it
-```
-
-The image is saved as `out_image/latest_generation.jpg`
-
----
-
-## Training Order (Important!)
-
-Always follow this sequence in the main menu:
-
-1. Train Tokenizer
-2. Preprocess Data (Pretrain)
-3. Pretrain Model
-4. Preprocess Data (SFT)
-5. SFT Fine-tune
-6. Train Image VAE
-7. Train Image Diffusion
-8. Chat
-
----
-
-## Configuration Tips
-
-Edit `image_config.json` after adding more images:
-
-```json
-image_width: 256
-image_height: 192
-epochs: 300
-batch_size: 4
-```
-
----
-
-## Troubleshooting
-
-| Problem | Fix |
-|---|---|
-| Tokenizer not found | Run Option 1 |
-| Model checkpoint not found | Run Options 3 and 5 |
-| Images look like random blobs | Need 150–200+ images then retrain VAE and Diffusion |
-| Out of memory during image training | Lower `batch_size` to 2 or 4 in `image_config.json` |
-| Generation is slow | Normal on CPU, just wait |
-
----
-
-## Best Practices
-
-- For the chatbot: more casual human-like conversations = more personality
-- For images: variety (different angles, lighting, backgrounds) is more important than quantity
-- Always train VAE before Diffusion
-- You can run everything on a normal laptop
-
----
-
-## Final Note
-
-TinyGPT is your little AI. You trained it, you talk to it, and you can keep improving it forever.
-
-Have fun, add your own data, make it weird, and enjoy watching it grow.
-
-**Now go train it and say hi to your creation!**
