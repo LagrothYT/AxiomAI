@@ -102,7 +102,8 @@ def generate_video(prompt, output_name="generated_video.mp4", progress_callback=
     v_cfg['codebook_size'] = vae_cfg.get('codebook_size', v_cfg.get('codebook_size', '4096'))
     v_cfg['bos_id'] = v_cfg.get('bos_id', v_cfg['codebook_size'])
     if int(v_cfg['bos_id']) != int(v_cfg['codebook_size']):
-        print(f"Aligning video BOS id to codebook size ({v_cfg['codebook_size']}) for generation.", flush=True)
+        if progress_callback is None:
+            print(f"Aligning video BOS id to codebook size ({v_cfg['codebook_size']}) for generation.", flush=True)
         v_cfg['bos_id'] = v_cfg['codebook_size']
 
     device = 'cpu'
@@ -135,7 +136,8 @@ def generate_video(prompt, output_name="generated_video.mp4", progress_callback=
             text_ckpt = train_cfg.get('text_encoder_checkpoint_path', 'model/video_model/text_encoder_checkpoint.pth')
             if os.path.exists(text_ckpt):
                 text_encoder.load_state_dict(torch.load(text_ckpt, map_location=device))
-                print(f"Loaded standalone Video Text Encoder checkpoint from {text_ckpt}", flush=True)
+                if progress_callback is None:
+                    print(f"Loaded standalone Video Text Encoder checkpoint from {text_ckpt}", flush=True)
             else:
                 raise FileNotFoundError(f"Video Text Encoder checkpoint missing at {text_ckpt}. Train option 8 before generation.")
         
@@ -148,9 +150,11 @@ def generate_video(prompt, output_name="generated_video.mp4", progress_callback=
             if bad_missing or bad_unexpected:
                 raise RuntimeError(f"Bonded VAE checkpoint mismatch. Missing: {bad_missing[:8]}, unexpected: {bad_unexpected[:8]}")
             vae_loaded = True
-            print(f"Loaded Video AR checkpoints (including bonded VAE) from {ckpt_path}", flush=True)
+            if progress_callback is None:
+                print(f"Loaded Video AR checkpoints (including bonded VAE) from {ckpt_path}", flush=True)
         else:
-            print(f"Loaded Video AR checkpoints from {ckpt_path}", flush=True)
+            if progress_callback is None:
+                print(f"Loaded Video AR checkpoints from {ckpt_path}", flush=True)
     else:
         raise FileNotFoundError(f"Video AR checkpoint missing at {ckpt_path}. Train option 9 before generation.")
         
@@ -158,7 +162,8 @@ def generate_video(prompt, output_name="generated_video.mp4", progress_callback=
         vae_ckpt_path = train_cfg.get('vae_checkpoint_path', 'model/video_model/vae_checkpoint.pth')
         if os.path.exists(vae_ckpt_path):
             load_state_dict_flexible(vae, vae_ckpt_path, key='state_dict', device=device)
-            print("Loaded standalone strict VAE compression checkpoint.", flush=True)
+            if progress_callback is None:
+                print("Loaded standalone strict VAE compression checkpoint.", flush=True)
         else:
             raise FileNotFoundError(f"VAE checkpoint missing at {vae_ckpt_path}. Train option 7 before generation.")
 
@@ -212,8 +217,9 @@ def generate_video(prompt, output_name="generated_video.mp4", progress_callback=
         raise ValueError(f"Invalid latent video grid: T={t_len}, H={h_len}, W={w_len}. Check fps/duration/width/height/downsample config.")
     if max(t_len, h_len, w_len) >= int(v_cfg.get('max_seq_len', 2048)):
         raise ValueError("VIDEO_MODEL max_seq_len must be larger than the largest latent coordinate.")
+    total_progress_units = (2 * t_len) + 2
     
-    def generate_single_scale(scale_id, text_context, prefix=None):
+    def generate_single_scale(scale_id, text_context, prefix=None, base_progress=0):
         # Scale 0 downsamples spatial resolution by half to create a low-latency structural backbone
         scale_h = h_len // 2 if scale_id == 0 else h_len
         scale_w = w_len // 2 if scale_id == 0 else w_len
@@ -222,8 +228,8 @@ def generate_video(prompt, output_name="generated_video.mp4", progress_callback=
             progress_callback,
             f"Scale {scale_id}",
             f"Generating {seq_len_calc} latent tokens ({scale_h}x{scale_w})",
-            current=0,
-            total=t_len,
+            current=base_progress,
+            total=total_progress_units,
             start_time=start_time,
         )
         
@@ -237,16 +243,16 @@ def generate_video(prompt, output_name="generated_video.mp4", progress_callback=
         indices = torch.full((1, frame_size), video_model.bos_id, device=device, dtype=torch.long)
         
         # Context building
-        if prefix is not None:
-            # Scale 1 dynamically pools the timeline out of the Scale 0 structural sequence
-            # This crushes cross-attention RAM bloat dramatically during long scale cascade execution!
-            hc = h_len // 2
-            wc = w_len // 2
-            coarse_emb = video_model.tok_embed(prefix.view(1, -1))
-            coarse_emb = coarse_emb.view(1, t_len, hc * wc, -1).mean(dim=1)
-            context_emb = torch.cat([text_context, coarse_emb], dim=1)
-        else:
-            context_emb = text_context
+        with torch.inference_mode():
+            if prefix is not None:
+                # Scale 1 dynamically pools the timeline out of the Scale 0 structural sequence.
+                hc = h_len // 2
+                wc = w_len // 2
+                coarse_emb = video_model.tok_embed(prefix.view(1, -1))
+                coarse_emb = coarse_emb.view(1, t_len, hc * wc, -1).mean(dim=1)
+                context_emb = torch.cat([text_context, coarse_emb], dim=1)
+            else:
+                context_emb = text_context
             
         kv_caches = None
         
@@ -275,8 +281,8 @@ def generate_video(prompt, output_name="generated_video.mp4", progress_callback=
                     progress_callback,
                     f"Scale {scale_id}",
                     "Frame cascade",
-                    current=i + 1,
-                    total=t_len,
+                    current=base_progress + i + 1,
+                    total=total_progress_units,
                     start_time=start_time,
                 )
                     
@@ -284,14 +290,21 @@ def generate_video(prompt, output_name="generated_video.mp4", progress_callback=
 
     # Multi-Scale Hierarchical generation Loop
     # 1. Generate coarse semantic structure
-    coarse_indices = generate_single_scale(0, text_emb)
+    coarse_indices = generate_single_scale(0, text_emb, base_progress=0)
     
     # 2. Refine (Scale 1) -> Feed the coarse structure in as Cross-Attention!
-    fine_indices = generate_single_scale(1, text_emb, prefix=coarse_indices)
+    fine_indices = generate_single_scale(1, text_emb, prefix=coarse_indices, base_progress=t_len)
 
     # Decode Latents
     fine_indices = fine_indices.view(1, t_len, h_len, w_len)
-    emit_progress(progress_callback, "Decode", "Converting tokens to frames", start_time=start_time)
+    emit_progress(
+        progress_callback,
+        "Decode",
+        "Converting tokens to frames",
+        current=2 * t_len,
+        total=total_progress_units,
+        start_time=start_time,
+    )
     with torch.inference_mode():
         # Get embeddings from codebook
         quantized = vae.quantizer.embedding(fine_indices) # (B, T, H, W, D)
@@ -304,7 +317,14 @@ def generate_video(prompt, output_name="generated_video.mp4", progress_callback=
     os.makedirs(data_cfg['output_path'], exist_ok=True)
     out_path = os.path.join(data_cfg['output_path'], output_name)
     
-    emit_progress(progress_callback, "Write", f"Saving MP4 to {out_path}", start_time=start_time)
+    emit_progress(
+        progress_callback,
+        "Write",
+        f"Saving MP4 to {out_path}",
+        current=(2 * t_len) + 1,
+        total=total_progress_units,
+        start_time=start_time,
+    )
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     video_t, video_h, video_w, _ = video.shape
     fps = float(data_cfg.get('fps', 8.0))
@@ -318,7 +338,14 @@ def generate_video(prompt, output_name="generated_video.mp4", progress_callback=
         out.write(frame_bgr)
         
     out.release()
-    emit_progress(progress_callback, "Done", f"Video saved to {out_path}", start_time=start_time)
+    emit_progress(
+        progress_callback,
+        "Done",
+        f"Video saved to {out_path}",
+        current=total_progress_units,
+        total=total_progress_units,
+        start_time=start_time,
+    )
     return out_path
 
 if __name__ == "__main__":

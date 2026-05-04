@@ -184,16 +184,39 @@ def start_chat():
                 if prompt:
                     try:
                         from video_generation.generate import generate_video
-                        def show_video_progress(phase, detail="", current=None, total=None, elapsed=None):
-                            progress = f"{current}/{total}" if current is not None and total is not None else ""
-                            elapsed_text = f"{elapsed:.1f}s" if elapsed is not None else ""
-                            print(f"{YELLOW}  | {phase:<10} {progress:<7} {detail:<42} {elapsed_text:>7}{RESET}", flush=True)
+                        def format_eta(seconds):
+                            if seconds is None or seconds == float('inf'):
+                                return "--:--"
+                            seconds = max(0, int(seconds))
+                            mins, secs = divmod(seconds, 60)
+                            return f"{mins:02d}:{secs:02d}"
 
-                        print(f"{YELLOW}  +--[ Video Generation ]{RESET}")
-                        print(f"{YELLOW}  | Prompt     {prompt}{RESET}", flush=True)
+                        progress_line = {"len": 0}
+
+                        def show_video_progress(phase, detail="", current=None, total=None, elapsed=None):
+                            bar_width = 24
+                            if current is None or total is None or total <= 0:
+                                text = f"  Video [{'=' * 3}{'.' * (bar_width - 3)}] preparing...        ETA --:--"
+                            else:
+                                pct = max(0.0, min(1.0, current / total))
+                                filled = min(bar_width, int(round(pct * bar_width)))
+                                bar = ("=" * filled) + ("." * (bar_width - filled))
+                                if elapsed is not None and current > 0:
+                                    eta = elapsed * max(0, total - current) / current
+                                else:
+                                    eta = None
+                                text = f"  Video [{bar}] {pct*100:5.1f}%  {phase:<7} ETA {format_eta(eta)}"
+
+                            clear = " " * max(0, progress_line["len"] - len(text))
+                            sys.stdout.write(f"\r{YELLOW}{text}{clear}{RESET}")
+                            sys.stdout.flush()
+                            progress_line["len"] = len(text)
+
                         out_path = generate_video(prompt, "chat_gen.mp4", progress_callback=show_video_progress)
-                        print(f"{GREEN}  +-- Done     {os.path.abspath(out_path)}{RESET}\n", flush=True)
+                        sys.stdout.write("\n")
+                        print(f"{GREEN}  Video saved: {os.path.abspath(out_path)}{RESET}\n", flush=True)
                     except Exception as e:
+                        sys.stdout.write("\n")
                         print(f"{YELLOW}  [Error] Video Generation failed: {e}{RESET}\n")
                 else:
                     print(f"{YELLOW}  [System] Usage: /video <prompt>{RESET}\n")

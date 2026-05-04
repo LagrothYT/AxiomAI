@@ -1,5 +1,5 @@
-import os
 import cv2
+import os
 import torch
 import numpy as np
 from torch.utils.data import Dataset
@@ -61,7 +61,7 @@ class VideoDataset(Dataset):
     def caption_path(self, video_name):
         return os.path.join(self.data_path, self._caption_name(video_name))
 
-    def _readable_frame_count(self, path):
+    def _readable_frame_count(self, path, stop_at=None):
         cap = cv2.VideoCapture(path)
         if not cap.isOpened():
             return None
@@ -73,6 +73,8 @@ class VideoDataset(Dataset):
                 if not ret:
                     break
                 count += 1
+                if stop_at is not None and count >= stop_at:
+                    break
         finally:
             cap.release()
         return count
@@ -81,7 +83,7 @@ class VideoDataset(Dataset):
         problems = []
         for video_name in self.video_files:
             path = self.video_path(video_name)
-            readable_frames = self._readable_frame_count(path)
+            readable_frames = self._readable_frame_count(path, stop_at=self.num_frames)
             if readable_frames is None:
                 problems.append(f"{video_name}: OpenCV could not open video.")
                 continue
