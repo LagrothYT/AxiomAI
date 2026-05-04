@@ -36,6 +36,13 @@ def print_training_banner(title, rows, width=54):
         print(f"  {label:<12} {value}")
     print("─" * (width + 2))
 
+def should_log_step(step_index, total_steps):
+    step = step_index + 1
+    if total_steps <= 1:
+        return True
+    log_every = max(1, min(10, total_steps // 5 if total_steps >= 5 else 1))
+    return step == 1 or step == total_steps or step % log_every == 0
+
 def make_video_collate(pad_id):
     def collate(batch):
         videos, captions = zip(*batch)
@@ -272,6 +279,8 @@ def build_latent_cache(vae, dataset, train_cfg, data_cfg, vae_cfg, device):
     try:
         with torch.no_grad():
             for idx in range(len(dataset)):
+                if idx == 0 or len(dataset) <= 10 or (idx + 1) % 10 == 0:
+                    print(f"    Caching clip {idx + 1}/{len(dataset)}...", flush=True)
                 video, caption = dataset[idx]
                 video = video.unsqueeze(0).to(device)
                 scaled_video = F.interpolate(video, scale_factor=(1.0, 0.5, 0.5), mode='trilinear', align_corners=False)
@@ -283,7 +292,7 @@ def build_latent_cache(vae, dataset, train_cfg, data_cfg, vae_cfg, device):
                     'caption': caption.cpu().long(),
                 })
                 if (idx + 1) % 10 == 0 or (idx + 1) == len(dataset):
-                    print(f"    Cached {idx + 1}/{len(dataset)} clips")
+                    print(f"    Cached {idx + 1}/{len(dataset)} clips", flush=True)
     finally:
         dataset.flip_prob = old_flip
         dataset.crop_pad_percent = old_crop
@@ -512,8 +521,8 @@ def train_vae():
             train_batches += 1
             train_used_codes.update(torch.unique(indices.detach()).cpu().tolist())
             
-            if len(dataloader) > 1 and i % 10 == 0:
-                print(f"Epoch [{epoch+1}/{epochs}] Step [{i}/{len(dataloader)}] VAE Loss: {loss.item():.4f} (L1: {loss_parts['l1'].item():.4f}, MSE: {loss_parts['mse'].item():.4f}, VQ: {loss_parts['vq'].item():.4f})")
+            if should_log_step(i, len(dataloader)):
+                print(f"Epoch [{epoch+1}/{epochs}] Step [{i+1}/{len(dataloader)}] VAE Loss: {loss.item():.4f} (L1: {loss_parts['l1'].item():.4f}, MSE: {loss_parts['mse'].item():.4f}, VQ: {loss_parts['vq'].item():.4f})", flush=True)
                 
         avg_train_loss = epoch_loss / max(1, len(dataloader))
         avg_train_recon = train_recon_sum / max(1, train_batches)
@@ -707,8 +716,8 @@ def train_text_encoder():
             
             epoch_loss += loss.item()
             
-            if len(dataloader) > 1 and i % 10 == 0:
-                print(f"Epoch [{epoch+1}/{epochs}] Step [{i}/{len(dataloader)}] Loss: {loss.item():.4f}")
+            if should_log_step(i, len(dataloader)):
+                print(f"Epoch [{epoch+1}/{epochs}] Step [{i+1}/{len(dataloader)}] Loss: {loss.item():.4f}", flush=True)
                 
         avg_loss = epoch_loss / max(1, len(dataloader))
         tag = ""
@@ -921,8 +930,8 @@ def train_video_model():
             
             epoch_loss += ar_loss.item()
             
-            if len(train_loader) > 1 and i % 10 == 0:
-                print(f"Epoch [{epoch+1}/{epochs}] Step [{i}/{len(train_loader)}] Scale: {scale_id} AR Loss: {ar_loss.item():.4f}")
+            if should_log_step(i, len(train_loader)):
+                print(f"Epoch [{epoch+1}/{epochs}] Step [{i+1}/{len(train_loader)}] Scale: {scale_id} AR Loss: {ar_loss.item():.4f}", flush=True)
 
         avg_train_loss = epoch_loss / max(1, len(train_loader))
         

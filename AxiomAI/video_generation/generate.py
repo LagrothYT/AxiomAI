@@ -4,6 +4,7 @@ import configparser
 import os
 import cv2
 import numpy as np
+import time
 
 from video_model.vae import VideoVAE
 from video_model.text_encoder import TextEncoder
@@ -38,6 +39,19 @@ def load_state_dict_flexible(model, checkpoint_path, key=None, device='cpu'):
         raise RuntimeError(f"Checkpoint key mismatch. Missing: {bad_missing[:8]}, unexpected: {bad_unexpected[:8]}")
     return payload
 
+def emit_progress(progress_callback, phase, detail="", current=None, total=None, start_time=None):
+    elapsed = time.perf_counter() - start_time if start_time is not None else None
+    if progress_callback is not None:
+        progress_callback(phase=phase, detail=detail, current=current, total=total, elapsed=elapsed)
+        return
+
+    progress = f" [{current}/{total}]" if current is not None and total is not None else ""
+    elapsed_text = f" ({elapsed:.1f}s)" if elapsed is not None else ""
+    message = f"[Video] {phase}{progress}"
+    if detail:
+        message += f": {detail}"
+    print(f"{message}{elapsed_text}", flush=True)
+
 def sample_top_k_top_p(logits, top_k=40, top_p=0.9, temperature=1.0):
     logits = logits / temperature
     
@@ -65,7 +79,9 @@ def sample_top_k_top_p(logits, top_k=40, top_p=0.9, temperature=1.0):
     sampled_2d = torch.multinomial(probs_2d, num_samples=1)
     return sampled_2d.view(*batch_shape)
 
-def generate_video(prompt, output_name="generated_video.mp4"):
+def generate_video(prompt, output_name="generated_video.mp4", progress_callback=None):
+    start_time = time.perf_counter()
+    emit_progress(progress_callback, "Setup", "Reading video configuration", start_time=start_time)
     config = configparser.ConfigParser()
     config.read('configs/video_config.ini')
     v_cfg = config['VIDEO_MODEL']
@@ -86,7 +102,7 @@ def generate_video(prompt, output_name="generated_video.mp4"):
     v_cfg['codebook_size'] = vae_cfg.get('codebook_size', v_cfg.get('codebook_size', '4096'))
     v_cfg['bos_id'] = v_cfg.get('bos_id', v_cfg['codebook_size'])
     if int(v_cfg['bos_id']) != int(v_cfg['codebook_size']):
-        print(f"Aligning video BOS id to codebook size ({v_cfg['codebook_size']}) for generation.")
+        print(f"Aligning video BOS id to codebook size ({v_cfg['codebook_size']}) for generation.", flush=True)
         v_cfg['bos_id'] = v_cfg['codebook_size']
 
     device = 'cpu'
@@ -94,12 +110,14 @@ def generate_video(prompt, output_name="generated_video.mp4"):
     num_threads = int(train_cfg.get('num_threads', 0))
     safe_set_torch_threads(num_threads)
     
+    emit_progress(progress_callback, "Tokenizer", "Loading shared vocabulary", start_time=start_time)
     vocab_cfg = configparser.ConfigParser()
     vocab_cfg.read('configs/config.ini')
     tokenizer = CharTokenizer()
     if not tokenizer.load(vocab_cfg['DATA']['vocab_path']):
         raise FileNotFoundError(f"Tokenizer not found at {vocab_cfg['DATA']['vocab_path']}")
 
+    emit_progress(progress_callback, "Models", "Building VAE, text encoder, and Video AR", start_time=start_time)
     vae = VideoVAE(vae_cfg).to(device)
     text_encoder = TextEncoder(t_cfg).to(device)
     video_model = MultiScaleVideoModel(v_cfg).to(device)
@@ -107,6 +125,7 @@ def generate_video(prompt, output_name="generated_video.mp4"):
     ckpt_path = train_cfg.get('checkpoint_path', 'model/video_model/video_checkpoint.pth')
     vae_loaded = False
     
+    emit_progress(progress_callback, "Weights", "Loading trained checkpoints", start_time=start_time)
     if os.path.exists(ckpt_path):
         ckpt = torch.load(ckpt_path, map_location=device)
         video_model.load_state_dict(ckpt['video_model'])
@@ -116,7 +135,7 @@ def generate_video(prompt, output_name="generated_video.mp4"):
             text_ckpt = train_cfg.get('text_encoder_checkpoint_path', 'model/video_model/text_encoder_checkpoint.pth')
             if os.path.exists(text_ckpt):
                 text_encoder.load_state_dict(torch.load(text_ckpt, map_location=device))
-                print(f"Loaded standalone Video Text Encoder checkpoint from {text_ckpt}")
+                print(f"Loaded standalone Video Text Encoder checkpoint from {text_ckpt}", flush=True)
             else:
                 raise FileNotFoundError(f"Video Text Encoder checkpoint missing at {text_ckpt}. Train option 8 before generation.")
         
@@ -129,9 +148,9 @@ def generate_video(prompt, output_name="generated_video.mp4"):
             if bad_missing or bad_unexpected:
                 raise RuntimeError(f"Bonded VAE checkpoint mismatch. Missing: {bad_missing[:8]}, unexpected: {bad_unexpected[:8]}")
             vae_loaded = True
-            print(f"Loaded Video AR checkpoints (including bonded VAE) from {ckpt_path}")
+            print(f"Loaded Video AR checkpoints (including bonded VAE) from {ckpt_path}", flush=True)
         else:
-            print(f"Loaded Video AR checkpoints from {ckpt_path}")
+            print(f"Loaded Video AR checkpoints from {ckpt_path}", flush=True)
     else:
         raise FileNotFoundError(f"Video AR checkpoint missing at {ckpt_path}. Train option 9 before generation.")
         
@@ -139,7 +158,7 @@ def generate_video(prompt, output_name="generated_video.mp4"):
         vae_ckpt_path = train_cfg.get('vae_checkpoint_path', 'model/video_model/vae_checkpoint.pth')
         if os.path.exists(vae_ckpt_path):
             load_state_dict_flexible(vae, vae_ckpt_path, key='state_dict', device=device)
-            print("Loaded standalone strict VAE compression checkpoint.")
+            print("Loaded standalone strict VAE compression checkpoint.", flush=True)
         else:
             raise FileNotFoundError(f"VAE checkpoint missing at {vae_ckpt_path}. Train option 7 before generation.")
 
@@ -151,7 +170,8 @@ def generate_video(prompt, output_name="generated_video.mp4"):
     if not prompt_tokens:
         prompt_tokens = [tokenizer.pad_id]
     tokens = torch.tensor([prompt_tokens], device=device)
-    with torch.no_grad():
+    emit_progress(progress_callback, "Prompt", "Encoding text prompt", start_time=start_time)
+    with torch.inference_mode():
         text_emb = text_encoder(tokens)
 
     # Sequence dimensions based unconditionally on physics output targets
@@ -194,12 +214,18 @@ def generate_video(prompt, output_name="generated_video.mp4"):
         raise ValueError("VIDEO_MODEL max_seq_len must be larger than the largest latent coordinate.")
     
     def generate_single_scale(scale_id, text_context, prefix=None):
-        print(f"Generating Scale {scale_id}...")
-        
         # Scale 0 downsamples spatial resolution by half to create a low-latency structural backbone
         scale_h = h_len // 2 if scale_id == 0 else h_len
         scale_w = w_len // 2 if scale_id == 0 else w_len
         seq_len_calc = t_len * scale_h * scale_w
+        emit_progress(
+            progress_callback,
+            f"Scale {scale_id}",
+            f"Generating {seq_len_calc} latent tokens ({scale_h}x{scale_w})",
+            current=0,
+            total=t_len,
+            start_time=start_time,
+        )
         
         # Determine sequence coordinates completely
         # Row-major flattening guarantees this order:
@@ -224,7 +250,7 @@ def generate_video(prompt, output_name="generated_video.mp4"):
             
         kv_caches = None
         
-        with torch.no_grad():
+        with torch.inference_mode():
             # Generate entire frames progressively mathematically eliminating O(H*W) sequence bottlenecks
             for i in range(t_len):
                 
@@ -245,7 +271,14 @@ def generate_video(prompt, output_name="generated_video.mp4"):
                 next_frame_idx = sample_top_k_top_p(logits)
                 indices = torch.cat([indices, next_frame_idx], dim=1)
                 
-                print(f"  Frame Cascade Phase: {i+1}/{t_len}")
+                emit_progress(
+                    progress_callback,
+                    f"Scale {scale_id}",
+                    "Frame cascade",
+                    current=i + 1,
+                    total=t_len,
+                    start_time=start_time,
+                )
                     
         return indices[:, frame_size:] # Drop BOS Frame
 
@@ -258,7 +291,8 @@ def generate_video(prompt, output_name="generated_video.mp4"):
 
     # Decode Latents
     fine_indices = fine_indices.view(1, t_len, h_len, w_len)
-    with torch.no_grad():
+    emit_progress(progress_callback, "Decode", "Converting tokens to frames", start_time=start_time)
+    with torch.inference_mode():
         # Get embeddings from codebook
         quantized = vae.quantizer.embedding(fine_indices) # (B, T, H, W, D)
         quantized = quantized.permute(0, 4, 1, 2, 3) # (B, D, T, H, W)
@@ -270,6 +304,7 @@ def generate_video(prompt, output_name="generated_video.mp4"):
     os.makedirs(data_cfg['output_path'], exist_ok=True)
     out_path = os.path.join(data_cfg['output_path'], output_name)
     
+    emit_progress(progress_callback, "Write", f"Saving MP4 to {out_path}", start_time=start_time)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     video_t, video_h, video_w, _ = video.shape
     fps = float(data_cfg.get('fps', 8.0))
@@ -283,7 +318,8 @@ def generate_video(prompt, output_name="generated_video.mp4"):
         out.write(frame_bgr)
         
     out.release()
-    print(f"Video natively accelerated to {out_path}")
+    emit_progress(progress_callback, "Done", f"Video saved to {out_path}", start_time=start_time)
+    return out_path
 
 if __name__ == "__main__":
     p = input("Enter prompt: ")

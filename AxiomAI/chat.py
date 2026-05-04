@@ -184,9 +184,15 @@ def start_chat():
                 if prompt:
                     try:
                         from video_generation.generate import generate_video
-                        print(f"{YELLOW}  [System] Launching Video Generation for: '{prompt}'...{RESET}\n")
-                        generate_video(prompt, "chat_gen.mp4")
-                        print(f"{GREEN}  [System] Video saved successfully.{RESET}\n")
+                        def show_video_progress(phase, detail="", current=None, total=None, elapsed=None):
+                            progress = f"{current}/{total}" if current is not None and total is not None else ""
+                            elapsed_text = f"{elapsed:.1f}s" if elapsed is not None else ""
+                            print(f"{YELLOW}  | {phase:<10} {progress:<7} {detail:<42} {elapsed_text:>7}{RESET}", flush=True)
+
+                        print(f"{YELLOW}  +--[ Video Generation ]{RESET}")
+                        print(f"{YELLOW}  | Prompt     {prompt}{RESET}", flush=True)
+                        out_path = generate_video(prompt, "chat_gen.mp4", progress_callback=show_video_progress)
+                        print(f"{GREEN}  +-- Done     {os.path.abspath(out_path)}{RESET}\n", flush=True)
                     except Exception as e:
                         print(f"{YELLOW}  [Error] Video Generation failed: {e}{RESET}\n")
                 else:
