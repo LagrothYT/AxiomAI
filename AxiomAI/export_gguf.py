@@ -26,10 +26,18 @@ if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
         pass
 
 try:
-    from gguf import GGUFWriter, GGMLQuantizationType
+    from gguf import GGUFWriter
+    GGUF_IMPORT_ERROR = None
 except ImportError:
-    print("❌ FATAL: 'gguf' library not installed. Run: pip install gguf")
-    sys.exit(1)
+    GGUFWriter = None
+    GGUF_IMPORT_ERROR = "The optional 'gguf' package is not installed. Run: pip install gguf"
+
+
+def require_gguf():
+    if GGUFWriter is None:
+        print(f"  ❌ {GGUF_IMPORT_ERROR}")
+        return False
+    return True
 
 
 def clear_screen():
@@ -184,6 +192,8 @@ def export_text_model(is_sft=False):
         blocks.{i}.ffn.experts.{j}.w3.weight            (hidden, d_model)
     """
     label = "SFT" if is_sft else "Base"
+    if not require_gguf():
+        return False
 
     config = configparser.ConfigParser()
     config.read('configs/config.ini')
@@ -369,6 +379,9 @@ def export_video_vae():
         quantizer.embedding.weight                (codebook_size, latent_channels)
         decoder.{i}.*                             Mirror of encoder
     """
+    if not require_gguf():
+        return False
+
     v_cfg = configparser.ConfigParser()
     if not os.path.exists('configs/video_config.ini'):
         print("  ❌ video_config.ini not found")
@@ -468,6 +481,9 @@ def export_video_text_encoder():
         norm.weight                      (d_model,)
         norm.bias                        (d_model,)
     """
+    if not require_gguf():
+        return False
+
     v_cfg = configparser.ConfigParser()
     if not os.path.exists('configs/video_config.ini'):
         print("  ❌ video_config.ini not found")
@@ -607,6 +623,9 @@ def export_video_ar_model():
         norm_f.weight                              (d_model,)
         head.weight                               (codebook_size, d_model)
     """
+    if not require_gguf():
+        return False
+
     v_cfg = configparser.ConfigParser()
     if not os.path.exists('configs/video_config.ini'):
         print("  ❌ video_config.ini not found")
@@ -769,6 +788,9 @@ def export_menu():
     print("║       G G U F   E X P O R T   M E N U       ║")
     print("╚══════════════════════════════════════════════╝")
     print()
+
+    if not require_gguf():
+        return
 
     # Scan what checkpoints exist
     config = configparser.ConfigParser()

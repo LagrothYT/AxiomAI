@@ -193,8 +193,15 @@ class VideoVAE(nn.Module):
         dead_code_refresh = str(config.get('dead_code_refresh', 'False')).strip().lower() in ('1', 'true', 'yes', 'on')
         dead_code_threshold = float(config.get('dead_code_threshold', 0.01))
         max_code_refresh = int(config.get('max_code_refresh', 64))
+        spatial_downsample = int(config.get('spatial_downsample', 8))
+        temporal_downsample = int(config.get('temporal_downsample', 2))
         if base_channels % 8 != 0:
             raise ValueError("VAE base_channels must be divisible by 8 for GroupNorm.")
+        if spatial_downsample != 8 or temporal_downsample != 2:
+            raise ValueError(
+                "Current VideoVAE architecture supports spatial_downsample=8 and temporal_downsample=2 only. "
+                f"Current: spatial_downsample={spatial_downsample}, temporal_downsample={temporal_downsample}."
+            )
 
         def blocks(channels):
             return [ResnetBlock3d(channels, channels, residual_scale=residual_scale) for _ in range(res_blocks)]

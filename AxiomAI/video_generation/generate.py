@@ -112,6 +112,13 @@ def generate_video(prompt, output_name="generated_video.mp4"):
         video_model.load_state_dict(ckpt['video_model'])
         if 'text_encoder' in ckpt:
             text_encoder.load_state_dict(ckpt['text_encoder'])
+        else:
+            text_ckpt = train_cfg.get('text_encoder_checkpoint_path', 'model/video_model/text_encoder_checkpoint.pth')
+            if os.path.exists(text_ckpt):
+                text_encoder.load_state_dict(torch.load(text_ckpt, map_location=device))
+                print(f"Loaded standalone Video Text Encoder checkpoint from {text_ckpt}")
+            else:
+                raise FileNotFoundError(f"Video Text Encoder checkpoint missing at {text_ckpt}. Train option 8 before generation.")
         
         # Pull VAE physically bonded to AR Network if available
         if 'vae' in ckpt:
@@ -126,7 +133,7 @@ def generate_video(prompt, output_name="generated_video.mp4"):
         else:
             print(f"Loaded Video AR checkpoints from {ckpt_path}")
     else:
-        print("Warning: No Video AR checkpoint found. Generating with random weights.")
+        raise FileNotFoundError(f"Video AR checkpoint missing at {ckpt_path}. Train option 9 before generation.")
         
     if not vae_loaded:
         vae_ckpt_path = train_cfg.get('vae_checkpoint_path', 'model/video_model/vae_checkpoint.pth')
@@ -134,7 +141,7 @@ def generate_video(prompt, output_name="generated_video.mp4"):
             load_state_dict_flexible(vae, vae_ckpt_path, key='state_dict', device=device)
             print("Loaded standalone strict VAE compression checkpoint.")
         else:
-            print("Warning: No VAE checkpoint found. Video decoding will fail.")
+            raise FileNotFoundError(f"VAE checkpoint missing at {vae_ckpt_path}. Train option 7 before generation.")
 
     vae.eval()
     text_encoder.eval()
@@ -155,8 +162,23 @@ def generate_video(prompt, output_name="generated_video.mp4"):
     spatial_ds = int(vae_cfg.get('spatial_downsample', 8))
     width = int(train_cfg['width'])
     height = int(train_cfg['height'])
+    if spatial_ds < 1 or temporal_ds < 1:
+        raise ValueError("VAE spatial_downsample and temporal_downsample must both be >= 1.")
+    if spatial_ds != 8 or temporal_ds != 2:
+        raise ValueError(
+            "Current VideoVAE architecture supports spatial_downsample=8 and temporal_downsample=2 only. "
+            f"Current: spatial_downsample={spatial_ds}, temporal_downsample={temporal_ds}."
+        )
+    if width <= 0 or height <= 0:
+        raise ValueError(f"Video width/height must be positive. Current: {width}x{height}.")
     if width % spatial_ds != 0 or height % spatial_ds != 0:
         raise ValueError(f"Video width/height must be divisible by spatial_downsample={spatial_ds}. Current: {width}x{height}.")
+    coarse_factor = spatial_ds * 2
+    if width % coarse_factor != 0 or height % coarse_factor != 0:
+        raise ValueError(
+            f"Video width/height must be divisible by {coarse_factor} for the two-scale video path. "
+            f"Current: {width}x{height}, spatial_downsample={spatial_ds}."
+        )
     if total_physical_frames <= 0 or total_physical_frames % temporal_ds != 0:
         raise ValueError(f"fps * duration ({total_physical_frames}) must be positive and divisible by temporal_downsample={temporal_ds}.")
     
@@ -252,6 +274,8 @@ def generate_video(prompt, output_name="generated_video.mp4"):
     video_t, video_h, video_w, _ = video.shape
     fps = float(data_cfg.get('fps', 8.0))
     out = cv2.VideoWriter(out_path, fourcc, fps, (video_w, video_h))
+    if not out.isOpened():
+        raise RuntimeError(f"OpenCV could not open output video writer for {out_path}")
     
     for frame in video:
         # Pytorch handles RGB, but cv2's C++ native backend strictly requires BGR matrices

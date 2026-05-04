@@ -49,7 +49,8 @@ def make_video_collate(pad_id):
     return collate
 
 def split_video_dataset(dataset, val_percent, seed=1337):
-    val_len = max(1, int(len(dataset) * val_percent)) if len(dataset) > 1 else 0
+    val_percent = max(0.0, min(0.95, float(val_percent)))
+    val_len = max(1, int(len(dataset) * val_percent)) if len(dataset) > 1 and val_percent > 0 else 0
     if val_len >= len(dataset):
         val_len = len(dataset) - 1
     train_len = len(dataset) - val_len
@@ -337,16 +338,40 @@ def validate_video_setup(v_cfg, t_cfg, vae_cfg, train_cfg, data_cfg):
     temporal_ds = int(vae_cfg.get('temporal_downsample', 2))
     max_seq = int(v_cfg.get('max_seq_len', 2048))
     codebook_size = int(vae_cfg.get('codebook_size', 4096))
+    latent_channels = int(vae_cfg.get('latent_channels', 4))
+    base_channels = int(vae_cfg.get('base_channels', 32))
+    quantizer_chunk = int(vae_cfg.get('quantizer_chunk_size', 2048))
     bos_id = int(v_cfg.get('bos_id', codebook_size))
     batch_size = int(train_cfg.get('batch_size', 1))
     epochs = int(train_cfg.get('epochs', 1))
 
     if width <= 0 or height <= 0 or frames <= 0:
         raise ValueError("Video width, height, and frame count must all be positive.")
+    if spatial_ds < 1 or temporal_ds < 1:
+        raise ValueError("VAE spatial_downsample and temporal_downsample must both be >= 1.")
+    if spatial_ds != 8 or temporal_ds != 2:
+        raise ValueError(
+            "Current VideoVAE architecture supports spatial_downsample=8 and temporal_downsample=2 only. "
+            f"Current: spatial_downsample={spatial_ds}, temporal_downsample={temporal_ds}."
+        )
+    if codebook_size < 2:
+        raise ValueError("VAE codebook_size must be >= 2.")
+    if latent_channels < 1:
+        raise ValueError("VAE latent_channels must be >= 1.")
+    if base_channels < 8 or base_channels % 8 != 0:
+        raise ValueError("VAE base_channels must be >= 8 and divisible by 8 for GroupNorm.")
+    if quantizer_chunk < 0:
+        raise ValueError("VAE quantizer_chunk_size must be >= 0.")
     if batch_size < 1 or epochs < 1:
         raise ValueError("Video batch_size and epochs must both be >= 1.")
     if width % spatial_ds != 0 or height % spatial_ds != 0:
         raise ValueError(f"Video width/height must be divisible by spatial_downsample={spatial_ds}. Current: {width}x{height}.")
+    coarse_factor = spatial_ds * 2
+    if width % coarse_factor != 0 or height % coarse_factor != 0:
+        raise ValueError(
+            f"Video width/height must be divisible by {coarse_factor} for the two-scale video path. "
+            f"Current: {width}x{height}, spatial_downsample={spatial_ds}."
+        )
     if frames % temporal_ds != 0:
         raise ValueError(f"fps * duration ({frames}) must be divisible by temporal_downsample={temporal_ds}.")
     if (width // spatial_ds) < 2 or (height // spatial_ds) < 2:
@@ -585,7 +610,7 @@ def train_text_encoder():
         print(f"❌ FATAL ERROR: Video directory {data_path} not found.")
         return
         
-    txt_files = [f for f in os.listdir(data_path) if f.endswith('.txt')]
+    txt_files = [f for f in os.listdir(data_path) if f.lower().endswith('.txt')]
     if len(txt_files) == 0:
         print(f"❌ FATAL ERROR: No .txt caption files found in {data_path}.")
         return

@@ -21,10 +21,18 @@ class VideoDataset(Dataset):
         fps = float(config.get('fps', 8.0))
         duration = float(config.get('duration', 2.0))
         self.num_frames = int(fps * duration)
+        if self.num_frames < 1:
+            raise ValueError(f"Video fps * duration must produce at least 1 frame. Current: {fps} * {duration} = {fps * duration}.")
         
         # Augmentation parameters
         self.flip_prob = float(config.get('flip_prob', 0.5))
         self.crop_pad_percent = float(config.get('crop_pad_percent', 0.1))
+        if self.width < 1 or self.height < 1:
+            raise ValueError("Video width and height must both be positive.")
+        if self.flip_prob < 0.0 or self.flip_prob > 1.0:
+            raise ValueError("Video flip_prob must be between 0.0 and 1.0.")
+        if self.crop_pad_percent < 0.0:
+            raise ValueError("Video crop_pad_percent must be >= 0.0.")
         
         self.tokenizer = CharTokenizer()
         if not self.tokenizer.load(tokenizer_path):
@@ -53,20 +61,35 @@ class VideoDataset(Dataset):
     def caption_path(self, video_name):
         return os.path.join(self.data_path, self._caption_name(video_name))
 
+    def _readable_frame_count(self, path):
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            return None
+
+        count = 0
+        try:
+            while True:
+                ret, _ = cap.read()
+                if not ret:
+                    break
+                count += 1
+        finally:
+            cap.release()
+        return count
+
     def validate_files(self):
         problems = []
         for video_name in self.video_files:
             path = self.video_path(video_name)
-            cap = cv2.VideoCapture(path)
-            if not cap.isOpened():
+            readable_frames = self._readable_frame_count(path)
+            if readable_frames is None:
                 problems.append(f"{video_name}: OpenCV could not open video.")
                 continue
-            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap.release()
-            if frame_count <= 0:
+
+            if readable_frames <= 0:
                 problems.append(f"{video_name}: no readable frames.")
-            if frame_count < self.num_frames:
-                problems.append(f"{video_name}: only {frame_count} frames, needs {self.num_frames}; will pad with last frame.")
+            elif readable_frames < self.num_frames:
+                problems.append(f"{video_name}: only {readable_frames} readable frames, needs {self.num_frames}; will pad with last frame.")
 
             caption_path = self.caption_path(video_name)
             try:
@@ -78,15 +101,49 @@ class VideoDataset(Dataset):
 
         return problems
 
+    def _sample_frames_sequentially(self, path):
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            raise RuntimeError(f"OpenCV could not open video file: {path}")
+
+        all_frames = []
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                all_frames.append(frame)
+        finally:
+            cap.release()
+
+        if not all_frames:
+            raise RuntimeError(f"OpenCV could not decode any frames from: {path}")
+
+        sample_positions = np.linspace(0, len(all_frames) - 1, self.num_frames).round().astype(np.int64).tolist()
+        return [all_frames[pos] for pos in sample_positions]
+
+    def _augment_frame(self, frame, target_w, target_h, start_x, start_y, flip):
+        # BGR to RGB
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Resize slightly larger
+        frame = cv2.resize(frame, (target_w, target_h))
+        # Crop consistently down to target dims
+        frame = frame[start_y:start_y+self.height, start_x:start_x+self.width]
+        # Flip consistently
+        if flip:
+            frame = cv2.flip(frame, 1)
+        return frame
+
     def _load_video(self, path):
         cap = cv2.VideoCapture(path)
         if not cap.isOpened():
             raise RuntimeError(f"OpenCV could not open video file: {path}")
-        frames = []
+        raw_frames = []
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        # Determine sampling stride to get exactly num_frames
-        stride = max(1, total_frames // self.num_frames)
+        if total_frames > 0:
+            sample_positions = np.linspace(0, max(0, total_frames - 1), self.num_frames).round().astype(np.int64).tolist()
+        else:
+            sample_positions = []
         
         # Calculate consistent spatial augmentations for this entire sequence
         flip = np.random.rand() < self.flip_prob
@@ -98,31 +155,27 @@ class VideoDataset(Dataset):
         start_x = np.random.randint(0, max(1, pad_w + 1))
         start_y = np.random.randint(0, max(1, pad_h + 1))
         
-        count = 0
-        while len(frames) < self.num_frames:
+        for frame_idx in sample_positions:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             ret, frame = cap.read()
             if not ret:
-                break
-            
-            if count % stride == 0:
-                # BGR to RGB
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                # Resize slightly larger
-                frame = cv2.resize(frame, (target_w, target_h))
-                # Crop consistently down to target dims
-                frame = frame[start_y:start_y+self.height, start_x:start_x+self.width]
-                # Flip consistently
-                if flip:
-                    frame = cv2.flip(frame, 1)
-                    
-                frames.append(frame)
-            count += 1
+                continue
+            raw_frames.append(frame)
             
         cap.release()
+
+        if len(raw_frames) < self.num_frames:
+            raw_frames = self._sample_frames_sequentially(path)
+
+        frames = [
+            self._augment_frame(frame, target_w, target_h, start_x, start_y, flip)
+            for frame in raw_frames
+        ]
         
         # If too few frames, pad with last frame
         while len(frames) < self.num_frames:
             frames.append(frames[-1] if frames else np.zeros((self.height, self.width, 3), dtype=np.uint8))
+        frames = frames[:self.num_frames]
             
         # Stack and normalize to [-1, 1]
         video = np.stack(frames, axis=0) # (T, H, W, 3)

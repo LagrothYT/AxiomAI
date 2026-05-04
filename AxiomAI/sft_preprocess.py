@@ -4,6 +4,7 @@ import configparser
 import os
 import random
 from tokenizer.my_tokenizer import CharTokenizer
+from axiom_ui import clear_screen, print_done, print_run_banner, print_step
 
 def preprocess_data():
     config = configparser.ConfigParser()
@@ -18,32 +19,50 @@ def preprocess_data():
     train_mask_path = train_path.replace('.npy', '_mask.npy')
     val_mask_path = val_path.replace('.npy', '_mask.npy')
 
+    clear_screen()
+    print_run_banner("SFT Data Parse", [
+        ("🧾 Source", jsonl_path),
+        ("🧩 Vocab", vocab_path),
+        ("📘 Train", train_path),
+        ("🎭 Mask", train_mask_path),
+    ])
+
     tokenizer = CharTokenizer()
     if not tokenizer.load(vocab_path):
         print("Error: Tokenizer not found. Train it first from the main menu.")
         return
 
-    print(f"Loading conversational data from {jsonl_path}...")
+    print_step("Scanning", "finding SFT JSONL files")
     if not os.path.exists(jsonl_path):
         print(f"Error: {jsonl_path} not found.")
         return
 
+    if os.path.isdir(jsonl_path):
+        files_to_process = [os.path.join(jsonl_path, f) for f in sorted(os.listdir(jsonl_path)) if f.lower().endswith('.jsonl')]
+    else:
+        files_to_process = [jsonl_path]
+
     all_text_parts = []
-    with open(jsonl_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                data = json.loads(line)
-                conv_turns = []
-                for msg in data.get('conversations', []):
-                    role = msg.get('from', 'unknown')
-                    value = msg.get('value', '')
-                    conv_turns.append((role, value))
-                if conv_turns:
-                    all_text_parts.append(conv_turns)
-            except json.JSONDecodeError:
-                pass
+    for file_path in files_to_process:
+        if not file_path.lower().endswith('.jsonl'):
+            print_step("Skip", os.path.basename(file_path))
+            continue
+        print_step("JSONL", os.path.basename(file_path))
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                    conv_turns = []
+                    for msg in data.get('conversations', []):
+                        role = msg.get('from', 'unknown')
+                        value = msg.get('value', '')
+                        conv_turns.append((role, value))
+                    if conv_turns:
+                        all_text_parts.append(conv_turns)
+                except json.JSONDecodeError:
+                    pass
 
     if not all_text_parts:
         print("Error: No valid conversational data found.")
@@ -61,7 +80,7 @@ def preprocess_data():
 
     if not val_parts:
         val_parts = [all_text_parts[-1]]
-        print("Warning: Dataset too small for a clean split. Duplicated last conversation into val set.")
+        print_step("Warning", "dataset too small; duplicated last conversation into val set")
 
     # Encode each conversation + build loss mask
     # Mask = 1 ONLY on GPT assistant response tokens (including EOS)
@@ -79,9 +98,9 @@ def preprocess_data():
                     full_line = f"<{role}>: {value}\n"
                     full_tokens = tokenizer.encode(full_line)
 
-                    # Measure how many tokens the prefix occupies when encoded in isolation
-                    # to find the mask boundary (prefix = ignored, rest = trained)
-                    prefix_len = len(tokenizer.encode(f"<{role}>: "))
+                    # The full line tokenizes the response as a leading-space chunk after the colon.
+                    # Mask only the role prefix, then train on the assistant text including that space.
+                    prefix_len = len(tokenizer.encode(f"<{role}>:"))
 
                     all_tokens.extend(full_tokens)
                     all_masks.extend([0] * min(prefix_len, len(full_tokens)))
@@ -96,12 +115,12 @@ def preprocess_data():
                     all_masks.extend([0] * len(tokens))          # ignore human/system turns
         return all_tokens, all_masks
 
-    print("Encoding training tokens + loss masks...")
+    print_step("Encoding", "training tokens + loss masks")
     train_tokens, train_masks = encode_parts(train_parts)
     train_np = np.array(train_tokens, dtype=np.int64)
     train_mask_np = np.array(train_masks, dtype=np.int8)
 
-    print("Encoding validation tokens + loss masks...")
+    print_step("Encoding", "validation tokens + loss masks")
     val_tokens, val_masks = encode_parts(val_parts)
     val_np = np.array(val_tokens, dtype=np.int64)
     val_mask_np = np.array(val_masks, dtype=np.int8)
@@ -112,6 +131,9 @@ def preprocess_data():
     np.save(val_path, val_np)
     np.save(val_mask_path, val_mask_np)
 
-    print(f"Conversations -> Train: {len(train_parts):,}  |  Val: {len(val_parts):,}")
-    print(f"Saved {len(train_np):,} train tokens + mask and {len(val_np):,} val tokens + mask.")
-    print("Preprocessing complete! (Loss masking is now active for SFT)")
+    print_done([
+        ("✅ Done", "SFT arrays and masks saved"),
+        ("📊 Split", f"Train: {len(train_parts):,}  │  Val: {len(val_parts):,}"),
+        ("🔢 Tokens", f"Train: {len(train_np):,}  │  Val: {len(val_np):,}"),
+        ("🎭 Masks", f"{train_mask_path}  │  {val_mask_path}"),
+    ])

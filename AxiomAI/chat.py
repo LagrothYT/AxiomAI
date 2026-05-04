@@ -198,6 +198,7 @@ def start_chat():
             # Ensure history length fits into sequence limit. 
             # Slice oldest entire messages instead of randomly truncating the token sequence mid-conversation.
             max_prompt_len = max_seq_len - min(max_gen_length, max_seq_len // 2) - 1
+            max_prompt_len = max(1, max_prompt_len)
             
             while True:
                 full_context = ""
@@ -217,6 +218,8 @@ def start_chat():
             
             if not prompt_tokens:
                 continue
+            if len(prompt_tokens) > max_prompt_len:
+                prompt_tokens = prompt_tokens[-max_prompt_len:]
 
             prompt_tokens = [tokenizer.bos_id] + prompt_tokens
 

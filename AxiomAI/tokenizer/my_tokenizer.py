@@ -2,6 +2,7 @@ import json
 import os
 import re
 from collections import defaultdict
+from axiom_ui import clear_screen, print_done, print_run_banner, print_step
 
 class CharTokenizer:
     """Byte-Pair Encoding (BPE) tokenizer with pre-tokenization and special tokens.
@@ -120,7 +121,15 @@ class CharTokenizer:
 
     def train_from_file(self, text_path, vocab_size, save_path):
         """Train BPE with pre-tokenization. Final vocab == exactly `vocab_size`."""
-        print(f"Extracting text from {text_path}...")
+        clear_screen()
+        print_run_banner("Tokenizer Training", [
+            ("🧩 Source", text_path),
+            ("📦 Vocab", f"{int(vocab_size):,} target tokens"),
+            ("🧷 Special", "<PAD>  <BOS>  <EOS>"),
+            ("💾 Save", save_path),
+        ])
+
+        print_step("Scanning", "extracting source text")
         if not os.path.exists(text_path):
             print("Error: tokenizer source path not found.")
             return False
@@ -137,7 +146,7 @@ class CharTokenizer:
             return False
 
         # --- Pre-tokenize into word chunks ---
-        print("Pre-tokenizing text...")
+        print_step("Tokenize", "pre-tokenizing text")
         words = self._pretokenize(raw_text)
 
         # Build frequency dictionary: word (as byte tuple) -> count
@@ -145,7 +154,7 @@ class CharTokenizer:
         for word in words:
             word_freqs[tuple(word.encode('utf-8'))] += 1
 
-        print(f"  {len(words):,} word chunks -> {len(word_freqs):,} unique words")
+        print_step("Chunks", f"{len(words):,} word chunks  │  {len(word_freqs):,} unique words")
 
         # --- Initialize byte-level vocab ---
         self.vocab = {i: bytes([i]) for i in range(256)}
@@ -154,7 +163,7 @@ class CharTokenizer:
         next_id = 256
 
         num_merges = vocab_size - 256 - num_special
-        print(f"Training BPE: {num_merges:,} merges to reach vocab size {vocab_size}...")
+        print_step("BPE", f"{num_merges:,} merges to reach vocab size {vocab_size:,}")
 
         for i in range(num_merges):
             pair_counts = self._get_pair_counts(word_freqs)
@@ -177,7 +186,7 @@ class CharTokenizer:
 
             if (i + 1) % 500 == 0 or i == 0:
                 pct = (i + 1) / num_merges * 100
-                print(f"\r  Merges: {i + 1:,}/{num_merges:,} ({pct:.1f}%)", end="", flush=True)
+                print(f"\r  {'Merges':<12} {i + 1:,}/{num_merges:,} ({pct:.1f}%)", end="", flush=True)
 
         print()  # Flush progress line
 
@@ -201,7 +210,10 @@ class CharTokenizer:
         if save_dir:
             os.makedirs(save_dir, exist_ok=True)
         self.save(save_path)
-        print(f"Tokenizer saved to {save_path} | Final vocab size: {len(self.vocab)}")
+        print_done([
+            ("✅ Done", f"Tokenizer saved to {save_path}"),
+            ("📦 Final", f"{len(self.vocab):,} tokens"),
+        ])
         return True
 
     # ------------------------------------------------------------------

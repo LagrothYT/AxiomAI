@@ -4,6 +4,7 @@ import configparser
 import os
 import random
 from tokenizer.my_tokenizer import CharTokenizer
+from axiom_ui import clear_screen, print_done, print_run_banner, print_step
 
 def preprocess_data():
     config = configparser.ConfigParser()
@@ -14,12 +15,20 @@ def preprocess_data():
     train_path = config['DATA']['train_path']
     val_path = config['DATA']['val_path']
 
+    clear_screen()
+    print_run_banner("Pretrain Data Parse", [
+        ("🧾 Source", raw_path),
+        ("🧩 Vocab", vocab_path),
+        ("📘 Train", train_path),
+        ("📗 Val", val_path),
+    ])
+
     tokenizer = CharTokenizer()
     if not tokenizer.load(vocab_path):
         print("Error: Tokenizer not found. Train it first from the main menu.")
         return
 
-    print(f"Scanning data from {raw_path}...")
+    print_step("Scanning", "finding supported data files")
     if not os.path.exists(raw_path):
         print(f"Error: {raw_path} not found.")
         return
@@ -34,8 +43,8 @@ def preprocess_data():
     all_text_parts = []
     
     for f_path in files_to_process:
-        if f_path.endswith('.jsonl'):
-            print(f"  [JSONL] Parsing ShareGPT structures: {os.path.basename(f_path)}")
+        if f_path.lower().endswith('.jsonl'):
+            print_step("JSONL", os.path.basename(f_path))
             with open(f_path, 'r', encoding='utf-8') as f:
                 for line in f:
                     if not line.strip(): continue
@@ -50,14 +59,14 @@ def preprocess_data():
                             all_text_parts.append(('conv', conv_turns))
                     except json.JSONDecodeError:
                         pass
-        elif f_path.endswith('.txt'):
-            print(f"  [TXT]   Parsing raw text: {os.path.basename(f_path)}")
+        elif f_path.lower().endswith('.txt'):
+            print_step("TXT", os.path.basename(f_path))
             with open(f_path, 'r', encoding='utf-8') as f:
                 text = f.read().strip()
                 if text:
                     all_text_parts.append(('raw', text))
         else:
-            print(f"  [Skip]  Unsupported format: {os.path.basename(f_path)}")
+            print_step("Skip", os.path.basename(f_path))
 
     if not all_text_parts:
         print("Error: No valid data found in the target path.")
@@ -75,7 +84,7 @@ def preprocess_data():
 
     if not val_parts:
         val_parts = [all_text_parts[-1]]
-        print("Warning: Dataset too small for a clean split. Duplicated last conversation into val set.")
+        print_step("Warning", "dataset too small; duplicated last item into val set")
 
     # Encode each conversation wrapped in <BOS>, and properly cap <gpt>
     # responses with <EOS> so the model explicitly learns to stop talking.
@@ -95,11 +104,11 @@ def preprocess_data():
                 all_tokens.append(tokenizer.eos_id)
         return all_tokens
 
-    print("Encoding training tokens...")
+    print_step("Encoding", "training tokens")
     train_tokens = encode_parts(train_parts)
     train_np = np.array(train_tokens, dtype=np.int64)
 
-    print("Encoding validation tokens...")
+    print_step("Encoding", "validation tokens")
     val_tokens = encode_parts(val_parts)
     val_np = np.array(val_tokens, dtype=np.int64)
 
@@ -107,6 +116,8 @@ def preprocess_data():
     np.save(train_path, train_np)
     np.save(val_path, val_np)
 
-    print(f"Conversations -> Train: {len(train_parts):,}  |  Val: {len(val_parts):,}")
-    print(f"Saved {len(train_np):,} train tokens and {len(val_np):,} val tokens.")
-    print("Preprocessing complete!")
+    print_done([
+        ("✅ Done", "pretrain arrays saved"),
+        ("📊 Split", f"Train: {len(train_parts):,}  │  Val: {len(val_parts):,}"),
+        ("🔢 Tokens", f"Train: {len(train_np):,}  │  Val: {len(val_np):,}"),
+    ])

@@ -192,7 +192,7 @@ def get_dashboard_status(cfg, sft_cfg):
         # Count actual video files in the data directory
         v_path = v_data_cfg.get('video_data_path', 'data/Videos/')
         if os.path.isdir(v_path):
-            v_count = len([f for f in os.listdir(v_path) if f.endswith('.mp4')])
+            v_count = len([f for f in os.listdir(v_path) if f.lower().endswith('.mp4')])
         else:
             v_count = 0
         
@@ -281,7 +281,6 @@ def main_menu():
                 raw_data = cfg['DATA']['raw_data_path']
                 vocab_size = int(cfg['MODEL']['vocab_size'])
 
-                print("\n-- Training Tokenizer --")
                 tokenizer.train_from_file(raw_data, vocab_size, vocab_path)
                 input("\nPress Enter to continue...")
                 clear_screen()

@@ -12,6 +12,20 @@ from tqdm import tqdm
 from model import Transformer
 from tokenizer.my_tokenizer import CharTokenizer
 from overfit_monitor import OverfitMonitor
+from axiom_ui import print_run_banner
+
+STRUCTURAL_MODEL_KEYS = {
+    'd_model',
+    'n_layers',
+    'n_heads',
+    'vocab_size',
+    'max_seq_len',
+    'hidden_mult',
+    'norm_eps',
+    'use_moe',
+    'num_experts',
+    'experts_per_token',
+}
 
 # Allow numpy scalar types in torch.load checkpoints (PyTorch 2.6+ compatibility)
 try:
@@ -94,7 +108,7 @@ def load_config(is_sft=False):
                 if not config.has_section(section):
                     config.add_section(section)
                 for key, val in sft_config.items(section):
-                    if section == 'MODEL' and key in ['d_model', 'n_layers', 'n_heads', 'vocab_size', 'max_seq_len']:
+                    if section == 'MODEL' and key in STRUCTURAL_MODEL_KEYS:
                         continue # Block structural drift completely
                     config.set(section, key, val)
     return config
@@ -109,6 +123,11 @@ def validate_config(cfg, is_sft=False):
     head_dim = d_model // n_heads
     vocab_size = int(cfg['MODEL']['vocab_size'])
     seq_len = int(cfg['MODEL']['max_seq_len'])
+    hidden_mult = float(cfg['MODEL'].get('hidden_mult', 4.0))
+    norm_eps = float(cfg['MODEL'].get('norm_eps', 1e-6))
+    use_moe = cfg['MODEL'].getboolean('use_moe', fallback=False)
+    num_experts = int(cfg['MODEL'].get('num_experts', 4))
+    experts_per_tok = int(cfg['MODEL'].get('experts_per_token', 2))
     batch_size = int(cfg['TRAINING']['batch_size'])
     accum = int(cfg['TRAINING'].get('gradient_accumulation_steps', 1))
     epochs = int(cfg['TRAINING'].get('epochs', 1))
@@ -121,6 +140,15 @@ def validate_config(cfg, is_sft=False):
         raise ValueError(f"RoPE requires an even head_dim. Current head_dim is {head_dim}.")
     if seq_len < 2:
         raise ValueError("max_seq_len must be at least 2.")
+    if hidden_mult <= 0:
+        raise ValueError("MODEL hidden_mult must be > 0.")
+    if norm_eps <= 0:
+        raise ValueError("MODEL norm_eps must be > 0.")
+    if use_moe:
+        if num_experts < 1:
+            raise ValueError("MODEL num_experts must be >= 1 when use_moe = True.")
+        if experts_per_tok < 1 or experts_per_tok > num_experts:
+            raise ValueError("MODEL experts_per_token must be between 1 and num_experts.")
     if batch_size < 1 or accum < 1:
         raise ValueError("batch_size and gradient_accumulation_steps must both be >= 1.")
     if epochs < 1:
@@ -441,25 +469,24 @@ def train_model(resume_from=None, is_sft=False):
     n_layers = cfg['MODEL'].get('n_layers', '?')
     n_heads = cfg['MODEL'].get('n_heads', '?')
 
-    clear_screen()
-    print("╔══════════════════════════════════════════════╗")
-    print("║            T R A I N I N G   R U N           ║")
-    print("╚══════════════════════════════════════════════╝")
-    print()
     mode_tag = "SFT" if is_sft else "Pretrain"
     overfit_monitor = OverfitMonitor(mode_tag)
-    print(f"  🧠 Model       {format_param_count(num_params)} params  │  {n_layers}L {n_heads}H d={d_model}")
-    print(f"  ⚙  Config      {device.upper()}  │  Batch: {batch_size}×{gradient_accumulation_steps} (eff {batch_size*gradient_accumulation_steps})  │  LR: {lr}")
-    print(f"  📊 Data        Train: {len(train_dataset):,} windows  │  Val: {len(val_dataset):,} windows")
-    print(f"  📐 Schedule    {total_steps:,} steps  │  Warmup: {warmup_steps}  │  Min LR: {min_lr}")
-    print(f"  Perf         Stride: {sequence_stride}/{val_sequence_stride}  │  Checkpoint: {cfg['MODEL'].get('gradient_checkpointing', 'False')}  │  Compile: {compile_active}")
     
     try:
         import psutil
     except ImportError:
         psutil = None
     initial_ram = psutil.Process().memory_info().rss / 1024 / 1024 if psutil else 0.0
-    print(f"  💾 Memory      RAM: {initial_ram:.0f} MB")
+
+    clear_screen()
+    print_run_banner(f"{mode_tag} Training Run", [
+        ("🧠 Model", f"{format_param_count(num_params)} params  │  {n_layers}L {n_heads}H d={d_model}"),
+        ("⚙ Config", f"{device.upper()}  │  Batch: {batch_size}×{gradient_accumulation_steps} (eff {batch_size*gradient_accumulation_steps})  │  LR: {lr}"),
+        ("📊 Data", f"Train: {len(train_dataset):,} windows  │  Val: {len(val_dataset):,} windows"),
+        ("📐 Schedule", f"{total_steps:,} steps  │  Warmup: {warmup_steps}  │  Min LR: {min_lr}"),
+        ("⚡ Perf", f"Stride: {sequence_stride}/{val_sequence_stride}  │  Checkpoint: {cfg['MODEL'].get('gradient_checkpointing', 'False')}  │  Compile: {compile_active}"),
+        ("💾 Memory", f"RAM: {initial_ram:.0f} MB"),
+    ])
 
     if best_val_loss != float('inf'):
         best_ppl = math.exp(min(best_val_loss, 20.0))
