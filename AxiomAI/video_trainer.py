@@ -43,6 +43,16 @@ def should_log_step(step_index, total_steps):
     log_every = max(1, min(10, total_steps // 5 if total_steps >= 5 else 1))
     return step == 1 or step == total_steps or step % log_every == 0
 
+def format_delta(current, previous):
+    if previous is None:
+        return "first"
+    return f"{current - previous:+.4f}"
+
+def short_path(path):
+    if not path:
+        return ""
+    return os.path.normpath(path)
+
 def make_video_collate(pad_id):
     def collate(batch):
         videos, captions = zip(*batch)
@@ -82,6 +92,14 @@ def safe_set_torch_threads(num_threads):
         torch.set_num_interop_threads(max(1, num_threads // 2))
     except RuntimeError:
         pass
+
+def loader_kwargs_from_config(train_cfg):
+    num_workers = int(train_cfg.get('num_workers', 0))
+    kwargs = {'num_workers': num_workers}
+    if num_workers > 0:
+        kwargs['persistent_workers'] = train_cfg.getboolean('persistent_workers', fallback=True)
+        kwargs['prefetch_factor'] = int(train_cfg.get('prefetch_factor', 2))
+    return kwargs
 
 def load_state_dict_flexible(model, checkpoint_path, key=None, device='cpu'):
     payload = torch.load(checkpoint_path, map_location=device)
@@ -278,21 +296,29 @@ def build_latent_cache(vae, dataset, train_cfg, data_cfg, vae_cfg, device):
     vae.eval()
     try:
         with torch.no_grad():
-            for idx in range(len(dataset)):
-                if idx == 0 or len(dataset) <= 10 or (idx + 1) % 10 == 0:
-                    print(f"    Caching clip {idx + 1}/{len(dataset)}...", flush=True)
-                video, caption = dataset[idx]
-                video = video.unsqueeze(0).to(device)
+            batch_size = max(1, int(train_cfg.get('batch_size', 1)))
+            loader = DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                collate_fn=make_video_collate(dataset.tokenizer.pad_id),
+                **loader_kwargs_from_config(train_cfg),
+            )
+            cached = 0
+            for video, captions in loader:
+                video = video.to(device)
                 scaled_video = F.interpolate(video, scale_factor=(1.0, 0.5, 0.5), mode='trilinear', align_corners=False)
                 _, _, coarse = vae.encode(scaled_video)
                 _, _, fine = vae.encode(video)
-                samples.append({
-                    'coarse': coarse.squeeze(0).cpu().int(),
-                    'fine': fine.squeeze(0).cpu().int(),
-                    'caption': caption.cpu().long(),
-                })
-                if (idx + 1) % 10 == 0 or (idx + 1) == len(dataset):
-                    print(f"    Cached {idx + 1}/{len(dataset)} clips", flush=True)
+                for j in range(video.size(0)):
+                    samples.append({
+                        'coarse': coarse[j].cpu().int(),
+                        'fine': fine[j].cpu().int(),
+                        'caption': captions[j].cpu().long(),
+                    })
+                cached += video.size(0)
+                if cached <= batch_size or len(dataset) <= 10 or cached % 10 == 0 or cached >= len(dataset):
+                    print(f"    Cached {min(cached, len(dataset))}/{len(dataset)} clips", flush=True)
     finally:
         dataset.flip_prob = old_flip
         dataset.crop_pad_percent = old_crop
@@ -419,9 +445,7 @@ def load_setup():
         v_cfg['bos_id'] = v_cfg['codebook_size']
     validate_video_setup(v_cfg, t_cfg, vae_cfg, train_cfg, data_cfg)
     
-    device = train_cfg.get('device', 'cpu')
-    if device == 'auto' or device == 'cuda':
-        device = 'cpu'
+    device = "cpu"
         
     num_threads = int(train_cfg.get('num_threads', 0))
     safe_set_torch_threads(num_threads)
@@ -449,13 +473,14 @@ def train_vae():
     val_percent = float(train_cfg.get('val_split', 0.2))
     split_seed = int(train_cfg.get('split_seed', 1337))
     train_dataset, val_dataset, train_len, val_len = split_video_dataset(dataset, val_percent, split_seed)
+    loader_kwargs = loader_kwargs_from_config(train_cfg)
 
     if val_dataset is not None:
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=make_video_collate(dataset.tokenizer.pad_id))
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=make_video_collate(dataset.tokenizer.pad_id), **loader_kwargs)
     else:
         val_loader = None
 
-    dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=make_video_collate(dataset.tokenizer.pad_id))
+    dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=make_video_collate(dataset.tokenizer.pad_id), **loader_kwargs)
     
     lr = float(train_cfg['lr'])
     optimizer = optim.AdamW(vae.parameters(), lr=lr)
@@ -482,7 +507,7 @@ def train_vae():
     print()
     print(f"  🧠 VAE         {format_param_count(num_params)} params")
     print(f"  📐 Latent      {latent_ch}ch  │  Codebook: {codebook} tokens")
-    print(f"  ⚙  Config      {device.upper()}  │  Batch: {batch_size}  │  LR: {lr}")
+    print(f"  ⚙  Config      {str(device).upper()}  │  Batch: {batch_size}  │  LR: {lr}")
     print(f"  📊 Data        {len(dataset)} video clips  │  {duration}s @ {fps:.0f}fps")
     print(f"  🎯 Epochs      {epochs}")
     print("─" * 48)
@@ -491,11 +516,15 @@ def train_vae():
     print_training_banner("VAE Training Run", [
         ("🧠 Model", f"{format_param_count(num_params)} params  │  VQ-VAE"),
         ("📐 Latent", f"{latent_ch}ch  │  Codebook: {codebook} tokens"),
-        ("⚙ Config", f"{device.upper()}  │  Batch: {batch_size}  │  LR: {lr}"),
+        ("⚙ Config", f"{str(device).upper()}  │  Batch: {batch_size}  │  LR: {lr}"),
         ("📊 Data", f"Train: {train_len}  │  Val: {val_len}  │  {duration}s @ {fps:.0f}fps"),
         ("💾 Save", train_cfg['vae_checkpoint_path']),
     ])
 
+    print("  Epoch | Train  | Val    | Delta   | PSNR   | Codes | LR       | Status")
+    print("  " + "-" * 74)
+
+    last_val_loss = None
     for epoch in range(epochs):
         vae.train()
         epoch_loss = 0
@@ -521,8 +550,8 @@ def train_vae():
             train_batches += 1
             train_used_codes.update(torch.unique(indices.detach()).cpu().tolist())
             
-            if should_log_step(i, len(dataloader)):
-                print(f"Epoch [{epoch+1}/{epochs}] Step [{i+1}/{len(dataloader)}] VAE Loss: {loss.item():.4f} (L1: {loss_parts['l1'].item():.4f}, MSE: {loss_parts['mse'].item():.4f}, VQ: {loss_parts['vq'].item():.4f})", flush=True)
+            if len(dataloader) > 5 and should_log_step(i, len(dataloader)):
+                print(f"    batch {i+1}/{len(dataloader)} | loss {loss.item():.4f} | l1 {loss_parts['l1'].item():.4f} | mse {loss_parts['mse'].item():.4f} | vq {loss_parts['vq'].item():.4f}", flush=True)
                 
         avg_train_loss = epoch_loss / max(1, len(dataloader))
         avg_train_recon = train_recon_sum / max(1, train_batches)
@@ -567,8 +596,9 @@ def train_vae():
             val_code_usage = len(val_used_codes) / max(1, codebook)
 
         # Checkpoint logically secured directly behind mathematical validation improvements
+        improved = avg_val_loss < best_loss
         tag = ""
-        if avg_val_loss < best_loss:
+        if improved:
             best_loss = avg_val_loss
             os.makedirs(os.path.dirname(train_cfg['vae_checkpoint_path']), exist_ok=True)
             torch.save({
@@ -589,22 +619,39 @@ def train_vae():
                     },
                 })
             }, train_cfg['vae_checkpoint_path'])
-            tag = "  ✨ New Best"
+            tag = "best"
 
-        print(f"  Epoch {epoch+1:<3} │ T Loss {avg_train_loss:.4f}  │  V Loss {avg_val_loss:.4f}{tag}")
-        print(f"    Quality: PSNR {val_psnr:.2f}dB | Codebook used {val_code_usage*100:.1f}%")
         preview_path = None
         save_preview = train_cfg.getboolean('save_vae_recon_preview', fallback=True)
         preview_every = max(1, int(train_cfg.get('preview_every_epochs', 5)))
-        if save_preview and preview_original is not None and (avg_val_loss <= best_loss or epoch == 0 or (epoch + 1) % preview_every == 0):
+        should_save_preview = save_preview and preview_original is not None and (
+            epoch == 0 or (epoch + 1) % preview_every == 0 or (improved and (epoch + 1) <= preview_every)
+        )
+        if should_save_preview:
             preview_path = save_recon_preview(
                 preview_original,
                 preview_recon,
                 train_cfg.get('preview_path', 'model/video_model/previews'),
                 epoch + 1,
             )
+
+        status_parts = []
+        if tag:
+            status_parts.append(tag)
         if preview_path:
-            print(f"    Preview: {preview_path}")
+            status_parts.append("preview")
+        status = ", ".join(status_parts) if status_parts else "-"
+        current_lr = optimizer.param_groups[0]['lr']
+        print(
+            f"  {epoch+1:>3}/{epochs:<3} | "
+            f"{avg_train_loss:>6.4f} | "
+            f"{avg_val_loss:>6.4f} | "
+            f"{format_delta(avg_val_loss, last_val_loss):>7} | "
+            f"{val_psnr:>5.2f}dB | "
+            f"{val_code_usage*100:>5.1f}% | "
+            f"{current_lr:>8.1e} | {status}"
+        )
+        last_val_loss = avg_val_loss
 
         if val_loader:
             overfit_warning = overfit_monitor.update(epoch + 1, avg_train_loss, avg_val_loss)
@@ -670,7 +717,7 @@ def train_text_encoder():
     print("╚══════════════════════════════════════════════╝")
     print()
     print(f"  🧠 Encoder     {format_param_count(num_params)} params  │  {n_layers}L {n_heads}H d={d_model}")
-    print(f"  ⚙  Config      {device.upper()}  │  Batch: {batch_size}  │  LR: {lr}")
+    print(f"  ⚙  Config      {str(device).upper()}  │  Batch: {batch_size}  │  LR: {lr}")
     print(f"  📊 Data        {len(txt_files)} captions  │  {len(data):,} tokens  │  Seq: {max_seq_len}")
     print(f"  🎯 Epochs      {epochs}")
     print("─" * 48)
@@ -678,7 +725,7 @@ def train_text_encoder():
     clear_screen()
     print_training_banner("Text Encoder Train", [
         ("🧠 Model", f"{format_param_count(num_params)} params  │  {n_layers}L {n_heads}H d={d_model}"),
-        ("⚙ Config", f"{device.upper()}  │  Batch: {batch_size}  │  LR: {lr}"),
+        ("⚙ Config", f"{str(device).upper()}  │  Batch: {batch_size}  │  LR: {lr}"),
         ("📊 Data", f"{len(txt_files)} captions  │  {len(data):,} tokens  │  Seq: {max_seq_len}"),
         ("💾 Save", train_cfg.get('text_encoder_checkpoint_path', 'model/video_model/text_encoder_checkpoint.pth')),
     ])
@@ -690,12 +737,12 @@ def train_text_encoder():
         def __len__(self):
             return max(0, len(self.data) - self.seq_len - 1)
         def __getitem__(self, idx):
-            x = self.data[idx:idx + self.seq_len].astype(np.int64)
-            y = self.data[idx+1:idx+1+self.seq_len].astype(np.int64)
+            x = np.asarray(self.data[idx:idx + self.seq_len])
+            y = np.asarray(self.data[idx+1:idx+1+self.seq_len])
             return torch.from_numpy(x), torch.from_numpy(y)
 
     dataset = VideoTextDataset(data, max_seq_len)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, **loader_kwargs_from_config(train_cfg))
     
     for epoch in range(epochs):
         text_encoder.train()
@@ -785,11 +832,11 @@ def train_video_model():
         collate_fn = make_video_collate(dataset.tokenizer.pad_id)
 
     if val_dataset is not None:
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, **loader_kwargs_from_config(train_cfg))
     else:
         val_loader = None
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, **loader_kwargs_from_config(train_cfg))
 
     lr = float(train_cfg['lr'])
     trainable_params = list(video_model.parameters())
@@ -818,7 +865,7 @@ def train_video_model():
     print(f"  🧠 AR Model    {format_param_count(ar_params)} params  │  {n_layers}L {n_heads}H d={d_model}")
     print(f"  📝 Text Enc    {format_param_count(te_params)} params  │  {te_status}")
     print(f"  🎨 VAE         {vae_status}  │  Codebook: {codebook_size}")
-    print(f"  ⚙  Config      {device.upper()}  │  Batch: {batch_size}  │  LR: {lr}")
+    print(f"  ⚙  Config      {str(device).upper()}  │  Batch: {batch_size}  │  LR: {lr}")
     print(f"  📊 Data        Train: {train_len}  │  Val: {val_len}  │  {duration}s @ {fps:.0f}fps")
     print(f"  🎯 Epochs      {epochs}")
     print("─" * 48)
@@ -828,7 +875,7 @@ def train_video_model():
         ("🧠 Model", f"{format_param_count(ar_params)} params  │  {n_layers}L {n_heads}H d={d_model}"),
         ("📝 Text", f"{format_param_count(te_params)} params  │  {te_status}"),
         ("🎨 VAE", f"{vae_status}  │  Codebook: {codebook_size}"),
-        ("⚙ Config", f"{device.upper()}  │  Batch: {batch_size}  │  LR: {lr}"),
+        ("⚙ Config", f"{str(device).upper()}  │  Batch: {batch_size}  │  LR: {lr}"),
         ("📊 Data", f"Train: {train_len}  │  Val: {val_len}  │  {duration}s @ {fps:.0f}fps"),
         ("💾 Save", train_cfg['checkpoint_path']),
     ])

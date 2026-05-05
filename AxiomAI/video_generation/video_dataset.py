@@ -137,16 +137,8 @@ class VideoDataset(Dataset):
         return frame
 
     def _load_video(self, path):
-        cap = cv2.VideoCapture(path)
-        if not cap.isOpened():
-            raise RuntimeError(f"OpenCV could not open video file: {path}")
-        raw_frames = []
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total_frames > 0:
-            sample_positions = np.linspace(0, max(0, total_frames - 1), self.num_frames).round().astype(np.int64).tolist()
-        else:
-            sample_positions = []
-        
+        raw_frames = self._sample_frames_sequentially(path)
+
         # Calculate consistent spatial augmentations for this entire sequence
         flip = np.random.rand() < self.flip_prob
         pad_w = int(self.width * self.crop_pad_percent)
@@ -156,18 +148,6 @@ class VideoDataset(Dataset):
         
         start_x = np.random.randint(0, max(1, pad_w + 1))
         start_y = np.random.randint(0, max(1, pad_h + 1))
-        
-        for frame_idx in sample_positions:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            ret, frame = cap.read()
-            if not ret:
-                continue
-            raw_frames.append(frame)
-            
-        cap.release()
-
-        if len(raw_frames) < self.num_frames:
-            raw_frames = self._sample_frames_sequentially(path)
 
         frames = [
             self._augment_frame(frame, target_w, target_h, start_x, start_y, flip)

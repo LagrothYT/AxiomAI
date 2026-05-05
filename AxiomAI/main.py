@@ -11,6 +11,9 @@ from preprocess import preprocess_data
 from sft_preprocess import preprocess_data as preprocess_sft_data
 from tokenizer.my_tokenizer import CharTokenizer
 
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+os.chdir(PROJECT_ROOT)
+
 # Allow numpy scalar types in torch.load checkpoints (PyTorch 2.6+ compatibility)
 try:
     import numpy._core.multiarray
@@ -268,12 +271,13 @@ def main_menu():
         print("│                                              │")
         print("│  [ EXPORT ]                                  │")
         print("│ 10 │ Export Models to GGUF                   │")
+        print("│ 11 │ Open Web Chat + Video                   │")
         print("│                                              │")
         print("│  0 │ Exit                                    │")
         print("└──────────────────────────────────────────────┘")
 
         try:
-            choice = input("\n  Select (0-10): ").strip()
+            choice = input("\n  Select (0-11): ").strip()
 
             if choice == '1':
                 tokenizer = CharTokenizer()
@@ -331,6 +335,12 @@ def main_menu():
             elif choice == '10':
                 from export_gguf import export_menu
                 export_menu()
+                input("\nPress Enter to continue...")
+                clear_screen()
+
+            elif choice == '11':
+                from web_app import launch_web
+                launch_web(open_browser=True)
                 input("\nPress Enter to continue...")
                 clear_screen()
 

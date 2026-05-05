@@ -784,24 +784,16 @@ def export_video_ar_model():
 
 def export_menu():
     clear_screen()
-    print("╔══════════════════════════════════════════════╗")
-    print("║       G G U F   E X P O R T   M E N U       ║")
-    print("╚══════════════════════════════════════════════╝")
+    print("=" * 48)
+    print("AXIOMAI GGUF TEXT EXPORT")
+    print("=" * 48)
     print()
 
     if not require_gguf():
         return
 
-    # Scan what checkpoints exist
     config = configparser.ConfigParser()
     config.read('configs/config.ini')
-
-    v_cfg = configparser.ConfigParser()
-    has_video = os.path.exists('configs/video_config.ini')
-    if has_video:
-        v_cfg.read('configs/video_config.ini')
-        # FIX #8: Guard against missing sections in malformed ini
-        has_video = v_cfg.has_section('TRAINING')
 
     base_path = config['TRAINING'].get('checkpoint_path', 'model/best_model.pth')
     base_exists = os.path.exists(base_path)
@@ -811,91 +803,48 @@ def export_menu():
     sft_path = sft_cfg['TRAINING'].get('checkpoint_path', 'model/sft_best_model.pth') if sft_cfg.has_section('TRAINING') else ''
     sft_exists = os.path.exists(sft_path)
 
-    vae_path = v_cfg['TRAINING'].get('vae_checkpoint_path', '') if has_video else ''
-    vae_exists = os.path.exists(vae_path) if vae_path else False
+    s = lambda exists: "OK" if exists else "--"
 
-    te_path = v_cfg['TRAINING'].get('text_encoder_checkpoint_path', '') if has_video else ''
-    te_exists = os.path.exists(te_path) if te_path else False
-
-    ar_path = v_cfg['TRAINING'].get('checkpoint_path', '') if has_video else ''
-    ar_exists = os.path.exists(ar_path) if ar_path else False
-
-    s = lambda exists: "✅" if exists else "❌"
-
-    print(f"  [ AVAILABLE CHECKPOINTS ]")
-    print(f"  ─────────────────────────────────────────")
-    print(f"  {s(base_exists)} 1 │ Text Model (Base Pre-Train)")
-    print(f"  {s(sft_exists)} 2 │ Text Model (SFT Fine-Tune)")
-    print(f"  {s(vae_exists)} 3 │ Video VAE")
-    print(f"  {s(te_exists)} 4 │ Video Text Encoder")
-    print(f"  {s(ar_exists)} 5 │ Video AR Model (Full Bundle)")
-    print(f"       6 │ Export ALL Available")
-    print(f"       0 │ Back to Main Menu")
+    print("  [ AVAILABLE TEXT CHECKPOINTS ]")
+    print("  " + "-" * 42)
+    print(f"  {s(base_exists)} 1 | Text Model (Base Pre-Train)")
+    print(f"  {s(sft_exists)} 2 | Text Model (SFT Fine-Tune)")
+    print("       3 | Export ALL Text Models")
+    print("       0 | Back to Main Menu")
     print()
 
-    choice = input("  Select (0-6): ").strip()
-
+    choice = input("  Select (0-3): ").strip()
     results = []
 
     if choice == '1':
         if not base_exists:
-            print(f"\n  ❌ No Base checkpoint found at {base_path}")
+            print(f"\n  No Base checkpoint found at {base_path}")
         else:
             print()
             results.append(export_text_model(is_sft=False))
 
     elif choice == '2':
         if not sft_exists:
-            print(f"\n  ❌ No SFT checkpoint found at {sft_path}")
+            print(f"\n  No SFT checkpoint found at {sft_path}")
         else:
             print()
             results.append(export_text_model(is_sft=True))
 
     elif choice == '3':
-        if not vae_exists:
-            print(f"\n  ❌ No VAE checkpoint found at {vae_path}")
-        else:
-            print()
-            results.append(export_video_vae())
-
-    elif choice == '4':
-        if not te_exists:
-            print(f"\n  ❌ No Text Encoder checkpoint found at {te_path}")
-        else:
-            print()
-            results.append(export_video_text_encoder())
-
-    elif choice == '5':
-        if not ar_exists:
-            print(f"\n  ❌ No Video AR checkpoint found at {ar_path}")
-        else:
-            print()
-            results.append(export_video_ar_model())
-
-    elif choice == '6':
-        print("\n  Exporting all available checkpoints...\n")
+        print("\n  Exporting all available text checkpoints...\n")
         if base_exists:
             results.append(export_text_model(is_sft=False))
             print()
         if sft_exists:
             results.append(export_text_model(is_sft=True))
             print()
-        if vae_exists:
-            results.append(export_video_vae())
-            print()
-        if te_exists:
-            results.append(export_video_text_encoder())
-            print()
-        if ar_exists:
-            results.append(export_video_ar_model())
-            print()
 
-        if not any([base_exists, sft_exists, vae_exists, te_exists, ar_exists]):
-            print("  ❌ No checkpoints found to export.")
+        if not any([base_exists, sft_exists]):
+            print("  No text checkpoints found to export.")
         else:
             ok = sum(1 for r in results if r)
             total = len(results)
-            print(f"\n  ── Export Complete: {ok}/{total} successful ──")
+            print(f"\n  Export Complete: {ok}/{total} successful")
 
     elif choice == '0':
         return

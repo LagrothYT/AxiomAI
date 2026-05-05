@@ -56,6 +56,7 @@ class TokenDataset(Dataset):
         else:
             self.data = np.load(data_path)
             self.mask = np.load(mask_path) if mask_path else None
+        self.copy_slices = bool(use_mmap)
             
         self.seq_len = seq_len
         self.is_sft = self.mask is not None
@@ -77,6 +78,12 @@ class TokenDataset(Dataset):
         elif self.sequence_stride != 1:
             self.indices = candidate_starts
 
+    def _slice_array(self, arr, start, end):
+        view = arr[start:end]
+        if self.copy_slices:
+            return np.array(view, copy=True)
+        return np.asarray(view)
+
     def __len__(self):
         if self.indices is not None:
             return len(self.indices)
@@ -85,12 +92,11 @@ class TokenDataset(Dataset):
     def __getitem__(self, idx):
         if self.indices is not None:
             idx = int(self.indices[idx])
-        # Slice from the array (copy from mmap to avoid read-only tensor warnings)
-        x = np.array(self.data[idx:idx + self.seq_len])
-        y = np.array(self.data[idx + 1:idx + self.seq_len + 1])
+        x = self._slice_array(self.data, idx, idx + self.seq_len)
+        y = self._slice_array(self.data, idx + 1, idx + self.seq_len + 1)
         
         if self.is_sft:
-            m = np.array(self.mask[idx + 1:idx + self.seq_len + 1])
+            m = self._slice_array(self.mask, idx + 1, idx + self.seq_len + 1)
             return torch.from_numpy(x), torch.from_numpy(y), torch.from_numpy(m).to(torch.long)
             
         return torch.from_numpy(x), torch.from_numpy(y)
@@ -180,11 +186,6 @@ def validate_config(cfg, is_sft=False):
                 raise FileNotFoundError(f"SFT loss mask missing at '{mask_path}'. Run SFT preprocessing first.")
 
 def build_adamw(param_groups, lr, device):
-    if str(device).startswith('cuda'):
-        try:
-            return torch.optim.AdamW(param_groups, lr=lr, fused=True)
-        except (TypeError, RuntimeError):
-            pass
     return torch.optim.AdamW(param_groups, lr=lr)
 
 def compute_lm_loss(logits, targets, loss_mask, vocab_size):
@@ -481,7 +482,7 @@ def train_model(resume_from=None, is_sft=False):
     clear_screen()
     print_run_banner(f"{mode_tag} Training Run", [
         ("🧠 Model", f"{format_param_count(num_params)} params  │  {n_layers}L {n_heads}H d={d_model}"),
-        ("⚙ Config", f"{device.upper()}  │  Batch: {batch_size}×{gradient_accumulation_steps} (eff {batch_size*gradient_accumulation_steps})  │  LR: {lr}"),
+        ("⚙ Config", f"{str(device).upper()}  │  Batch: {batch_size}×{gradient_accumulation_steps} (eff {batch_size*gradient_accumulation_steps})  │  LR: {lr}"),
         ("📊 Data", f"Train: {len(train_dataset):,} windows  │  Val: {len(val_dataset):,} windows"),
         ("📐 Schedule", f"{total_steps:,} steps  │  Warmup: {warmup_steps}  │  Min LR: {min_lr}"),
         ("⚡ Perf", f"Stride: {sequence_stride}/{val_sequence_stride}  │  Checkpoint: {cfg['MODEL'].get('gradient_checkpointing', 'False')}  │  Compile: {compile_active}"),

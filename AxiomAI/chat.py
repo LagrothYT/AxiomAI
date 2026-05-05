@@ -71,6 +71,146 @@ def safe_set_torch_threads(num_threads):
     except RuntimeError:
         pass
 
+def select_chat_checkpoint(config):
+    base_model_path = config['TRAINING']['checkpoint_path']
+    sft_config = configparser.ConfigParser()
+    sft_config.read('configs/sft_config.ini')
+    sft_model_path = sft_config['TRAINING'].get('checkpoint_path', 'model/sft_best_model.pth') if sft_config.has_section('TRAINING') else 'model/sft_best_model.pth'
+
+    if os.path.exists(sft_model_path):
+        return sft_model_path, "SFT Fine-Tuned", sft_config if sft_config.has_section('CHAT') else config
+    if os.path.exists(base_model_path):
+        return base_model_path, "Base Pre-Trained", config
+    raise FileNotFoundError(f"Model weights not found at {base_model_path}. Train a text model first.")
+
+def sample_next_token(logits, tokenizer, prompt_tokens, generated_tokens, temperature, top_k, top_p, rep_pen):
+    raw_logits = logits[0, -1, :]
+    log_probs = F.log_softmax(raw_logits, dim=-1)
+    next_token_logits = raw_logits / temperature
+    next_token_logits = apply_repetition_penalty(next_token_logits, prompt_tokens + generated_tokens, penalty=rep_pen)
+    next_token_logits = top_k_filter(next_token_logits, k=top_k)
+    next_token_logits = top_p_filter(next_token_logits, p=top_p)
+    probs = F.softmax(next_token_logits, dim=-1)
+    next_token = torch.multinomial(probs, num_samples=1).item()
+    return next_token, -log_probs[next_token].item()
+
+class AxiomChatEngine:
+    def __init__(self):
+        self.config = configparser.ConfigParser()
+        self.config.read('configs/config.ini')
+        self.device = "cpu"
+
+        num_threads = int(self.config['TRAINING'].get('num_threads', 0))
+        safe_set_torch_threads(num_threads)
+
+        self.tokenizer = CharTokenizer()
+        if not self.tokenizer.load(self.config['DATA']['vocab_path']):
+            raise FileNotFoundError("Tokenizer not found. Train it first.")
+
+        self.model_path, self.model_source, self.chat_cfg = select_chat_checkpoint(self.config)
+        checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
+        self.model_cfg = checkpoint.get('config', dict(self.config['MODEL']))
+        self.max_seq_len = int(self.model_cfg.get('max_seq_len', self.config['MODEL'].get('max_seq_len', '256')))
+
+        self.model = Transformer(self.model_cfg).to(self.device)
+        self.model.load_state_dict(checkpoint['model'])
+        self.model.eval()
+
+    def default_settings(self):
+        chat_cfg = self.chat_cfg
+        return {
+            "temperature": float(chat_cfg['CHAT'].get('temperature', '0.8')) if chat_cfg.has_section('CHAT') else 0.8,
+            "top_k": int(chat_cfg['CHAT'].get('top_k', '40')) if chat_cfg.has_section('CHAT') else 40,
+            "top_p": float(chat_cfg['CHAT'].get('top_p', '0.9')) if chat_cfg.has_section('CHAT') else 0.9,
+            "repetition_penalty": float(chat_cfg['CHAT'].get('repetition_penalty', '1.15')) if chat_cfg.has_section('CHAT') else 1.15,
+            "max_gen_length": int(chat_cfg['CHAT'].get('max_gen_length', '200')) if chat_cfg.has_section('CHAT') else 200,
+        }
+
+    def status(self):
+        num_params = sum(p.numel() for p in self.model.parameters())
+        return {
+            "source": self.model_source,
+            "path": self.model_path,
+            "params": num_params,
+            "max_seq_len": self.max_seq_len,
+        }
+
+    def generate(self, history, settings=None):
+        cfg = self.default_settings()
+        if settings:
+            cfg.update({k: v for k, v in settings.items() if v is not None})
+
+        temperature = max(0.01, min(float(cfg["temperature"]), 2.0))
+        top_k = max(0, int(cfg["top_k"]))
+        top_p = max(0.0, min(float(cfg["top_p"]), 1.0))
+        rep_pen = max(1.0, float(cfg["repetition_penalty"]))
+        max_gen_length = max(1, int(cfg["max_gen_length"]))
+
+        turns = []
+        for item in history or []:
+            role = item.get("role", "human")
+            value = str(item.get("value", "")).strip()
+            if role in ("human", "gpt", "system") and value:
+                turns.append({"role": role, "value": value})
+
+        max_prompt_len = self.max_seq_len - min(max_gen_length, self.max_seq_len // 2) - 1
+        max_prompt_len = max(1, max_prompt_len)
+
+        while True:
+            full_context = ""
+            for turn in turns:
+                full_context += f"<{turn['role']}>: {turn['value']}\n"
+            full_context += "<gpt>:"
+
+            prompt_tokens = self.tokenizer.encode(full_context)
+            if len(prompt_tokens) > max_prompt_len and len(turns) > 1:
+                turns.pop(0)
+            else:
+                break
+
+        if not prompt_tokens:
+            return {"response": "", "ppl": 0.0, "context_left": self.max_seq_len}
+        if len(prompt_tokens) > max_prompt_len:
+            prompt_tokens = prompt_tokens[-max_prompt_len:]
+        prompt_tokens = [self.tokenizer.bos_id] + prompt_tokens
+
+        self.model.reset_cache()
+        generated_tokens = []
+        nll_sum = 0.0
+        total_len = len(prompt_tokens)
+
+        with torch.no_grad():
+            prompt_tensor = torch.tensor([prompt_tokens], dtype=torch.long, device=self.device)
+            logits, _ = self.model(prompt_tensor, use_cache=True)
+            next_token, nll = sample_next_token(logits, self.tokenizer, prompt_tokens, generated_tokens, temperature, top_k, top_p, rep_pen)
+
+            if next_token != self.tokenizer.eos_id:
+                generated_tokens.append(next_token)
+                nll_sum += nll
+                input_id = torch.tensor([[next_token]], dtype=torch.long, device=self.device)
+                total_len += 1
+
+                for _ in range(max_gen_length - 1):
+                    if total_len >= self.max_seq_len:
+                        break
+                    logits, _ = self.model(input_id, use_cache=True)
+                    next_token, nll = sample_next_token(logits, self.tokenizer, prompt_tokens, generated_tokens, temperature, top_k, top_p, rep_pen)
+                    if next_token == self.tokenizer.eos_id:
+                        break
+                    generated_tokens.append(next_token)
+                    nll_sum += nll
+                    total_len += 1
+                    input_id[0, 0] = next_token
+
+        response = self.tokenizer.decode(generated_tokens).strip()
+        ppl = math.exp(min(nll_sum / len(generated_tokens), 20.0)) if generated_tokens else 0.0
+        return {
+            "response": response,
+            "ppl": ppl,
+            "context_left": max(0, self.max_seq_len - total_len),
+            "source": self.model_source,
+        }
+
 
 def start_chat():
     config = configparser.ConfigParser()
